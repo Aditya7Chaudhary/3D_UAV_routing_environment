@@ -1,5 +1,16 @@
 #!/usr/bin/env python3
-"""Generate a structured 3D obstacle map (cylinders, gates, ellipsoids, polytopes).
+"""Generate one or more structured 3D UAV obstacle maps from YAML settings.
+
+The script turns configuration values into map and obstacle-generator
+parameters, optionally clears prescribed start/goal areas, then saves PCD and
+NPY point clouds. It is the standard command-line entry point for synthetic
+dataset generation.
+
+The configuration defines physical bounds, per-shape target densities,
+environment presets, output numbering, optional dynamic velocities, and
+visualisation defaults. Command line options override only the seed, sample
+count, configuration location, and viewer choices; all other values remain
+reproducible from the YAML file.
 
 Usage (from repo root):
   python scripts/generate_structure_map.py
@@ -27,11 +38,21 @@ from uav_env.visualize import plot_cloud_matplotlib, show_open3d
 
 
 def load_config(path: Path) -> dict:
+    """Load the YAML map-generation configuration as a nested dictionary.
+
+    ``safe_load`` accepts ordinary configuration values and deliberately does
+    not construct arbitrary Python objects from YAML tags.
+    """
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 def main():
+    """Parse options, generate samples, optionally clear regions, save, and plot.
+
+    Each sample uses ``seed + i`` so a dataset receives deterministic but
+    distinct maps.  Only the last sample is visualised after the loop.
+    """
     parser = argparse.ArgumentParser(description="Generate structured UAV obstacle maps")
     parser.add_argument(
         "--config",
@@ -45,9 +66,11 @@ def main():
     parser.add_argument("--open3d", action="store_true", help="Visualize with Open3D")
     args = parser.parse_args()
 
+    # Split optional configuration sections from required map/shape settings.
     cfg = load_config(args.config)
     mcfg = cfg["map"]
     pcfg = cfg["params"]
+    ecfg = cfg.get("environment", {})
     dcfg = cfg.get("dataset", {})
     ccfg = cfg.get("clear", {})
     dyn = cfg.get("dyn", {})
@@ -58,6 +81,8 @@ def main():
     out_dir = ROOT / dcfg.get("path", "outputs/dataset")
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Construct physical grid parameters first; the generator finalises the
+    # derived bounds and voxel storage during ``init_params``.
     basic = BasicMapParams(
         map_origin=np.array(
             [mcfg["x_origin"], mcfg["y_origin"], mcfg["z_origin"]], dtype=float
@@ -65,6 +90,7 @@ def main():
         map_size=np.array([mcfg["x_size"], mcfg["y_size"], mcfg["z_size"]], dtype=float),
     )
     grid_mp = GridMapParams(basic_mp=basic, resolution=float(mcfg["resolution"]))
+    # Transfer YAML ratios and size-distribution controls into typed settings.
     mgpa = MapGenParams(
         cylinder_ratio=float(pcfg["cylinder_ratio"]),
         circle_ratio=float(pcfg["circle_ratio"]),
@@ -85,19 +111,23 @@ def main():
 
     clear_pts = None
     use_3d = True
+    # Clear positions reserve collision-free regions, commonly for starts/goals.
     if ccfg.get("enabled", False):
         clear_pts, use_3d = load_clear_csv(ROOT / ccfg["path"])
 
     last_cloud = None
     for i in range(samples):
         cur_seed = seed + i
+        # Reset map state before every independent seed/sample.
         gen.clear()
-        gen.random_uni_map_gen(mgpa, cur_seed, bool(dyn.get("dyn_mode", False)))
+        gen.generate_environment(ecfg, cur_seed, bool(dyn.get("dyn_mode", False)))
         if mcfg.get("simple_2d", False):
             cloud = gen.get_pc_2d()
         else:
             cloud = gen.get_pc()
 
+        # Apply reservations after map construction so no generated point
+        # survives inside a configured clear region.
         if clear_pts is not None:
             cloud = clear_near_positions(cloud, clear_pts, use_3d=use_3d)
 

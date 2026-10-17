@@ -1,5 +1,13 @@
 #!/usr/bin/env python3
-"""Load maps from images / PCD / random points and optionally inflate to a grid.
+"""Load source maps and optionally rasterise or inflate them into a voxel grid.
+
+Supported modes are synthetic random points, occupancy images, and PCD files.
+The script writes the loaded cloud and, when enabled, occupied voxel centres,
+providing a ROS-free conversion path for planner inputs.
+
+For every input, the source cloud can receive bounded synthetic noise before
+being written. Grid inflation then expands occupied points into nearby voxels,
+which is useful for accounting for UAV clearance in a voxel planner.
 
 Usage (from repo root):
   python scripts/read_grid_map.py
@@ -32,16 +40,27 @@ from uav_env.visualize import plot_cloud_matplotlib, show_open3d
 
 
 def load_config(path: Path) -> dict:
+    """Load the YAML read/conversion configuration without unsafe YAML objects."""
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 def resolve_path(p: str | Path) -> Path:
+    """Resolve relative paths against the repository root.
+
+    Absolute paths are left unchanged, allowing users to convert data stored
+    outside this project without copying it into the repository first.
+    """
     path = Path(p)
     return path if path.is_absolute() else ROOT / path
 
 
 def load_one(mode: int, file_path: Path, cfg: dict) -> np.ndarray:
+    """Load one cloud according to the configured input mode.
+
+    Modes 2 and 3 intentionally stop with guidance because ROS bag support
+    was removed from this standalone port.
+    """
     mcfg = cfg["map"]
     map_size = np.array([mcfg["x_size"], mcfg["y_size"], mcfg["z_size"]], dtype=float)
     map_origin = np.array(
@@ -49,8 +68,10 @@ def load_one(mode: int, file_path: Path, cfg: dict) -> np.ndarray:
     )
     res = float(mcfg["resolution"])
 
+    # Mode 0 has no input file: it builds the historical synthetic test cloud.
     if mode == 0:
         return gen_random_cloud(bound=max(map_size[:2]) / 2, num=10000, seed=cfg["params"].get("seed", 0))
+    # Mode 1 maps image pixels into world voxel centres and extrudes them in Z.
     if mode == 1:
         return read_image_map(
             file_path,
@@ -60,6 +81,7 @@ def load_one(mode: int, file_path: Path, cfg: dict) -> np.ndarray:
             occ_th=float(cfg["img"]["occ_th"]),
             negate=bool(cfg["img"].get("negate", False)),
         )
+    # Mode 4 already supplies world-coordinate obstacle points.
     if mode == 4:
         return read_pcd(file_path)
     if mode in (2, 3):
@@ -71,6 +93,12 @@ def load_one(mode: int, file_path: Path, cfg: dict) -> np.ndarray:
 
 
 def main():
+    """Parse input options, convert maps, optionally grid them, and preview last.
+
+    A folder is filtered to appropriate image/PCD extensions and processed in
+    sorted order.  When several inputs are processed, their source filename is
+    prefixed to each output to avoid overwriting prior conversions.
+    """
     parser = argparse.ArgumentParser(description="Read / convert grid maps for UAV planning")
     parser.add_argument("--config", type=Path, default=ROOT / "config" / "read_grid_map.yaml")
     parser.add_argument("--mode", type=int, default=None, help="0=random, 1=image, 4=pcd")
@@ -87,6 +115,7 @@ def main():
     ocfg = cfg.get("output", {})
 
     files: list[Path] = []
+    # Choose either a sorted batch of maps or one explicitly configured file.
     if args.folder or cfg.get("use_folder", False):
         folder = resolve_path(args.folder or cfg["folder_path"])
         exts = {".png", ".jpg", ".jpeg", ".pcd"} if mode in (1, 4) else {".png", ".pcd"}
@@ -111,6 +140,8 @@ def main():
     for fp in files:
         print(f"Reading map: {fp}")
         cloud = load_one(mode, fp, cfg)
+        # Noise is applied before serialization and optional voxel inflation,
+        # so both outputs represent the same perturbed source cloud.
         cloud = add_noise_to_cloud(
             cloud,
             map_origin=basic.map_origin,
@@ -127,6 +158,8 @@ def main():
         write_pcd(out_pcd, cloud)
         print(f"  saved: {out_pcd}")
 
+        # Rebuild from free space for each file, then export canonical voxel
+        # centres rather than the raw, potentially off-grid input points.
         if mcfg.get("publish_grid_centers", True):
             grid.clear_all_occ()
             grid.fill_map(cloud, inflated=float(mcfg.get("inflate_radius", 0.0)))

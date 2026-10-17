@@ -8,6 +8,7 @@
 # (ROS bag modes 2/3 from the original package are removed — convert bags to PCD)
 
 map:
+  # Physical world bounds used when images are mapped to voxel centres or clouds inflated.
   x_size: 20.0
   y_size: 10.0
   z_size: 5.0
@@ -15,27 +16,27 @@ map:
   y_origin: -10.0
   z_origin: -0.1
   resolution: 0.1
-  inflate_radius: 0.2
+  inflate_radius: 0.2  # Axis-aligned voxel margin added around every input point.
   mode: 1
-  publish_grid_centers: true
+  publish_grid_centers: true  # Also save canonical occupied voxel-centre points.
 
 img:
-  negate: false
-  occ_th: 0.6
+  negate: false  # Invert image brightness before thresholding if white should mean obstacle.
+  occ_th: 0.6    # Darkness-derived occupancy score required for a pixel to be occupied.
 
 file_path: data/img/maze/maze8.png
-use_folder: false
+use_folder: false  # Process every supported map file in folder_path rather than file_path.
 folder_path: data/img/maze
 
 params:
-  add_noise: false
-  noise_std: 0.05
-  noise_prob: 0.1
-  seed: 0
+  add_noise: false  # Append jittered duplicate points to emulate noisy measurements.
+  noise_std: 0.05   # Gaussian standard deviation for each coordinate of noisy points.
+  noise_prob: 0.1   # Independent probability that each source point receives a duplicate.
+  seed: 0           # Reproducible seed for random-cloud mode and optional noise.
 
 output:
   pcd_path: outputs/read_map.pcd
   grid_pcd_path: outputs/read_map_grid.pcd
 
-visualize: true
-use_open3d: false
+visualize: true    # Save/show a Matplotlib preview after the final input map.
+use_open3d: false  # Use interactive Open3D viewing instead of Matplotlib.

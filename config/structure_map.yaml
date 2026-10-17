@@ -2,6 +2,7 @@
 # (replaces structure_map.launch)
 
 map:
+  # Physical extent of the continuous world before it is divided into voxels.
   x_size: 30.0
   y_size: 30.0
   z_size: 3.0
@@ -9,37 +10,69 @@ map:
   y_origin: -15.0
   z_origin: 0.0
   resolution: 0.2          # use 0.1 for denser maps (slower)
-  inflate_radius: 0.1
-  simple_2d: false
+  inflate_radius: 0.1  # Retained config field; structure generation samples shapes directly.
+  simple_2d: false     # Export a 2D occupied-column projection instead of the full 3D cloud.
 
 params:
+  # Ratios are target shares of all map voxels, not guaranteed exact volumes.
   cylinder_ratio: 0.01
   circle_ratio: 0.005
   gate_ratio: 0.005
   ellip_ratio: 0.005
   poly_ratio: 0.005
-  w1: 0.02
-  w2: 0.15
-  w3: 0.6
-  add_noise: false
-  seed: 1
+  w1: 0.02          # Small-width lower limit and noise standard deviation/probability value.
+  w2: 0.15          # Small-width upper limit and cap used when resampling ratios.
+  w3: 0.6           # Upper limit for radius-like obstacle dimensions.
+  add_noise: false  # Append small jittered obstacle points after shape rasterisation.
+  seed: 1           # Base seed; each generated dataset sample uses seed + its index.
+
+# Select the overall environment family. Valid values are: structured,
+# corridor, random_land, mountains, blocks, and mixed. Friendly aliases are
+# random_terrain, mountain, urban, and city. The default structured mode uses
+# the five primitive ratios above; other modes use only the relevant options.
+environment:
+  type: structured
+
+  # corridor: long X-direction passage with alternating openings in partitions.
+  width: 6.0
+  wall_height: 2.5
+  partition_spacing: 6.0
+  opening_width: 1.5
+
+  # random_land and mixed: seeded terrain is solid below a smoothed height field.
+  base_height: 0.0
+  height_range: 1.0
+  smoothing_passes: 6
+
+  # mountains: sum of smooth Gaussian hills; heights are clipped to map height.
+  mountain_count: 5
+  peak_height: 2.0
+  spread_min: 1.5
+  spread_max: 4.0
+
+  # blocks: rectangular building footprints and heights in world units.
+  building_count: 20
+  min_width: 1.0
+  max_width: 3.0
+  min_height: 0.8
+  max_height: 2.5
 
 dataset:
   save_map: true
   samples_num: 1
-  start_index: 0
+  start_index: 0  # First number used in saved pt<index>.pcd/.npy filenames.
   path: outputs/dataset
 
 clear:
-  enabled: false
+  enabled: false  # Remove obstacle points near listed start/goal coordinates after generation.
   path: data/clear_pos/clear_3d.csv
 
 dyn:
-  dyn_mode: false
+  dyn_mode: false  # Assign horizontal velocities to generated shapes for subsequent updates.
   v_x_h: 1.0
   v_y_h: 1.0
   v_z_h: 0.0
   dt: 0.1
 
-visualize: true
-use_open3d: false
+visualize: true    # Save a Matplotlib preview and show it unless --no-show is passed.
+use_open3d: false  # Use the interactive Open3D viewer instead of Matplotlib.

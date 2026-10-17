@@ -1,4 +1,14 @@
-"""Matplotlib / Open3D visualization helpers (replaces RViz)."""
+"""
+===============================================================================
+3D UAV ROUTING ENVIRONMENT — POINT-CLOUD VISUALISATION
+===============================================================================
+
+This file replaces the RViz-oriented visualisation path from the original
+project.  It offers a lightweight Matplotlib preview for files and automated
+runs, plus an Open3D interactive window for manual inspection.  Both helpers
+expect the repository-standard ``(N, 3)`` world-coordinate point cloud.
+===============================================================================
+"""
 
 from __future__ import annotations
 
@@ -14,12 +24,20 @@ def plot_cloud_matplotlib(
     show: bool = True,
     max_points: int = 80000,
 ):
+    """Plot an ``(N, 3)`` cloud, optionally downsampling and saving a PNG.
+
+    ``max_points`` caps plotting work only; it never alters the caller's
+    source array.  Point colour represents Z height, making vertical geometry
+    visible even in a dense scatter plot.
+    """
     import matplotlib.pyplot as plt
 
     pts = np.asarray(points, dtype=float)
     if pts.size == 0:
         print("Empty point cloud — nothing to plot.")
         return
+    # Downsample with a fixed seed so repeated previews of the same cloud use
+    # the same displayed subset.
     if len(pts) > max_points:
         idx = np.random.default_rng(0).choice(len(pts), max_points, replace=False)
         pts = pts[idx]
@@ -32,6 +50,8 @@ def plot_cloud_matplotlib(
     ax.set_zlabel("Z")
     ax.set_title(title)
     fig.tight_layout()
+    # Saving and displaying are independent: batch jobs can save and close the
+    # figure by passing ``show=False``.
     if save_path:
         Path(save_path).parent.mkdir(parents=True, exist_ok=True)
         fig.savefig(save_path, dpi=150)
@@ -43,6 +63,11 @@ def plot_cloud_matplotlib(
 
 
 def show_open3d(points: np.ndarray, title: str = "Point cloud"):
+    """Open an interactive Open3D viewer with colours derived from Z height.
+
+    Blue represents lower points and red represents higher points.  A small
+    denominator offset handles a flat cloud where all Z values are identical.
+    """
     import open3d as o3d
 
     pts = np.asarray(points, dtype=float)

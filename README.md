@@ -37,7 +37,7 @@ Original research paper (please cite if you use this for research):
 | `uav_env/shapes.py` | Obstacle primitives: `Cylinder`, `Ellipsoid`, `Polyhedron`, `CircleGate`, `RectGate`, plus rotation helpers. Pure NumPy/SciPy (ConvexHull replaces QuickHull). |
 | `uav_env/grid_map.py` | 3D occupancy grid: indexing, occupancy set/query, inflation fill, 2D projection of occupied columns. |
 | `uav_env/geo_map.py` | Lightweight container that stores the generated geometric obstacle instances. |
-| `uav_env/struct_map_gen.py` | **Structured map generator**: randomly places cylinders / circle gates / rect gates / ellipsoids / polytopes at target occupancy ratios; optional noise and dynamic motion. |
+| `uav_env/struct_map_gen.py` | Environment generator: original structured primitive maps plus corridor, random-land, mountain, urban-block, and mixed terrain presets; optional noise and dynamic primitive motion. |
 | `uav_env/map_io.py` | I/O helpers: image→3D cloud, PCD read/write, random cloud mode, noise injection, clear-zone filtering, CSV clear-position loading. |
 | `uav_env/mesh_export.py` | Voxelize a PCD, greedy rectangle merge per Z-slice, export OBJ mesh (optional Gazebo model files). |
 | `uav_env/visualize.py` | Visualization via Matplotlib (default) or Open3D (replaces RViz). |
@@ -111,7 +111,7 @@ pip install -r requirements.txt
 
 ## Quick start
 
-### 1) Generate a structured 3D obstacle map
+### 1) Generate a 3D obstacle map
 
 ```bash
 python scripts/generate_structure_map.py --config config/structure_map.yaml --no-show
@@ -134,6 +134,38 @@ params:
 ```
 
 Higher ratios → denser / harder environments for planners.
+
+### Environment presets
+
+`config/structure_map.yaml` also has an `environment.type` option. The default
+is `structured`, which uses the obstacle ratios above. Set it to one of the
+following values to generate a different family of environments:
+
+| Type | Generated environment | Main YAML controls |
+|------|-----------------------|--------------------|
+| `structured` | Random cylinders, gates, ellipsoids, and polyhedra. | `params.*_ratio`, `params.w1/w2/w3` |
+| `corridor` | Long corridor with walls and alternating partition openings. | `width`, `wall_height`, `partition_spacing`, `opening_width` |
+| `random_land` | Solid, reproducible smoothed random height field. | `base_height`, `height_range`, `smoothing_passes` |
+| `mountains` | Solid terrain made from random Gaussian hills. | `mountain_count`, `peak_height`, `spread_min`, `spread_max` |
+| `blocks` | Dense city-like field of rectangular buildings. | `building_count`, `min_width`, `max_width`, `min_height`, `max_height` |
+| `mixed` | Random land with the usual primitive obstacles placed over it. | random-land options plus `params.*_ratio` |
+
+`random_terrain`/`land`, `mountain`, and `urban`/`city` are also accepted
+aliases for `random_land`, `mountains`, and `blocks`, respectively.
+
+For example, generate mountains by changing only this block:
+
+```yaml
+environment:
+  type: mountains
+  mountain_count: 8
+  peak_height: 2.2
+  spread_min: 1.0
+  spread_max: 3.5
+```
+
+All preset randomness is controlled by the existing `params.seed`; when more
+than one dataset sample is requested, sample `i` uses `seed + i`.
 
 ### 2) Load a maze image as a 3D map
 

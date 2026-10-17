@@ -1,7 +1,19 @@
-"""Pure-Python 3D UAV routing / parametric map environment.
+"""
+3D UAV routing environment public package interface.
 
-Ported from Kumar Robotics kr_param_map (ROS1/ROS2) to stand alone on Windows,
-macOS, and Linux without ROS, PCL, or Ubuntu-only tooling.
+This package is a pure-Python port of the Kumar Robotics parametric mapping
+environment.  It runs on Windows, macOS, and Linux without ROS, PCL, or
+Ubuntu-only dependencies.
+
+The exports below are deliberately the small, high-level public API:
+
+* ``BasicMapParams`` and ``GridMapParams`` describe physical voxel maps.
+* ``GridMap`` stores and queries occupancy.
+* ``MapGenParams`` and ``StructMapGenerator`` create random shape maps.
+* The I/O helpers convert common map files to and from ``(N, 3)`` clouds.
+
+Individual geometry classes, mesh conversion, and visualisation helpers remain
+available through their own modules because they are more specialised tools.
 """
 
 from .grid_map import BasicMapParams, GridMap, GridMapParams
