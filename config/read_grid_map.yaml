@@ -1,0 +1,41 @@
+# Grid / file map reader settings
+# (replaces read_grid_map.launch)
+#
+# modes:
+#   0  randomly generate sparse points
+#   1  read a 2D image (.png) and extrude to 3D
+#   4  read a .pcd point cloud
+# (ROS bag modes 2/3 from the original package are removed — convert bags to PCD)
+
+map:
+  x_size: 20.0
+  y_size: 10.0
+  z_size: 5.0
+  x_origin: -5.0
+  y_origin: -10.0
+  z_origin: -0.1
+  resolution: 0.1
+  inflate_radius: 0.2
+  mode: 1
+  publish_grid_centers: true
+
+img:
+  negate: false
+  occ_th: 0.6
+
+file_path: data/img/maze/maze8.png
+use_folder: false
+folder_path: data/img/maze
+
+params:
+  add_noise: false
+  noise_std: 0.05
+  noise_prob: 0.1
+  seed: 0
+
+output:
+  pcd_path: outputs/read_map.pcd
+  grid_pcd_path: outputs/read_map_grid.pcd
+
+visualize: true
+use_open3d: false

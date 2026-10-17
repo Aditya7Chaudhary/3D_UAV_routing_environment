@@ -1,0 +1,45 @@
+# Structured / parametric obstacle map generator settings
+# (replaces structure_map.launch)
+
+map:
+  x_size: 30.0
+  y_size: 30.0
+  z_size: 3.0
+  x_origin: -15.0
+  y_origin: -15.0
+  z_origin: 0.0
+  resolution: 0.2          # use 0.1 for denser maps (slower)
+  inflate_radius: 0.1
+  simple_2d: false
+
+params:
+  cylinder_ratio: 0.01
+  circle_ratio: 0.005
+  gate_ratio: 0.005
+  ellip_ratio: 0.005
+  poly_ratio: 0.005
+  w1: 0.02
+  w2: 0.15
+  w3: 0.6
+  add_noise: false
+  seed: 1
+
+dataset:
+  save_map: true
+  samples_num: 1
+  start_index: 0
+  path: outputs/dataset
+
+clear:
+  enabled: false
+  path: data/clear_pos/clear_3d.csv
+
+dyn:
+  dyn_mode: false
+  v_x_h: 1.0
+  v_y_h: 1.0
+  v_z_h: 0.0
+  dt: 0.1
+
+visualize: true
+use_open3d: false
