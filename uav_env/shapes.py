@@ -41,15 +41,6 @@ into a 3x3 rotation matrix. This matrix is used to orient objects in 3D space.
 
 The implementation uses quaternions internally to combine the rotations.
 
-LIBRARIES
----------
-NumPy:
-    Used for vectors, matrices, coordinate transformations, and calculations.
-
-ConvexHull from SciPy:
-    Used to construct the outer convex shape around randomly generated points
-    when creating a Polyhedron.
-
 IMPORTANT NOTE
 --------------
 This file defines the obstacle geometry and its point-containment checks.

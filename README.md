@@ -47,6 +47,7 @@ Original research paper (please cite if you use this for research):
 | Path | Role |
 |------|------|
 | `scripts/generate_structure_map.py` | CLI for the structured generator (replaces `structure_map` ROS node + launch). Writes PCD/NPY under `outputs/`. |
+| `scripts/generate_environment_dataset.py` | Batch generator for an intentionally unbalanced mix of terrain/environment presets. Saves one PNG, PCD, NPY, and metadata record per sample. |
 | `scripts/read_grid_map.py` | CLI to load images / PCD / random points, optionally inflate to grid centers (replaces `read_grid_map` ROS node). |
 | `scripts/img2pcd.py` | Small standalone converter: one PNG → one PCD. |
 | `scripts/pcd_to_mesh.py` | Standalone PCD → OBJ mesh exporter (Gazebo files optional). |
@@ -166,6 +167,30 @@ environment:
 
 All preset randomness is controlled by the existing `params.seed`; when more
 than one dataset sample is requested, sample `i` uses `seed + i`.
+
+### Build a random, unbalanced environment dataset
+
+Use the dedicated dataset script when you want many varied environments rather
+than repeatedly editing `environment.type` in YAML:
+
+```bash
+python scripts/generate_environment_dataset.py --samples 100
+```
+
+It creates `outputs/random_environment_dataset/` with separate `images/` PNG
+previews, `point_clouds/` PCD and NPY coordinate arrays, `metadata.jsonl`, and
+`dataset_summary.json`. Environment types are deliberately sampled with an
+uneven default distribution: structured 35%, blocks 25%, mountains 15%, random
+land 10%, corridor 10%, and mixed 5%.
+
+Use `-x` as a short form of `--samples`, or tune the distribution with six
+comma-separated weights in this order: structured, blocks, mountains,
+random_land, corridor, mixed.
+
+```bash
+python scripts/generate_environment_dataset.py -x 500 --seed 42 \
+  --weights 7,5,3,2,2,1 --output-dir outputs/uav_dataset
+```
 
 ### 2) Load a maze image as a 3D map
 
