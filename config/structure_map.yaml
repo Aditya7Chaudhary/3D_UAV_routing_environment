@@ -5,9 +5,9 @@ map:
   # Physical extent of the continuous world before it is divided into voxels.
   x_size: 30.0
   y_size: 30.0
-  z_size: 3.0
-  x_origin: -15.0
-  y_origin: -15.0
+  z_size: 6.0
+  x_origin: 0.0
+  y_origin: 0.0
   z_origin: 0.0
   resolution: 0.2          # use 0.1 for denser maps (slower)
   inflate_radius: 0.1  # Retained config field; structure generation samples shapes directly.
@@ -15,11 +15,11 @@ map:
 
 params:
   # Ratios are target shares of all map voxels, not guaranteed exact volumes.
-  cylinder_ratio: 0.01
+  cylinder_ratio: 0.015
   circle_ratio: 0.005
   gate_ratio: 0.005
   ellip_ratio: 0.005
-  poly_ratio: 0.005
+  poly_ratio: 0.01
   w1: 0.02          # Small-width lower limit and noise standard deviation/probability value.
   w2: 0.15          # Small-width upper limit and cap used when resampling ratios.
   w3: 0.6           # Upper limit for radius-like obstacle dimensions.
@@ -42,7 +42,7 @@ environment:
   # random_land and mixed: seeded terrain is solid below a smoothed height field.
   base_height: 0.0
   height_range: 1.0
-  smoothing_passes: 6
+  smoothing_passes: 5
 
   # mountains: sum of smooth Gaussian hills; heights are clipped to map height.
   mountain_count: 5

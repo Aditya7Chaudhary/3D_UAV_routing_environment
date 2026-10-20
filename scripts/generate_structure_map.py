@@ -34,7 +34,7 @@ if str(ROOT) not in sys.path:
 from uav_env.grid_map import BasicMapParams, GridMapParams
 from uav_env.map_io import clear_near_positions, load_clear_csv, write_pcd
 from uav_env.struct_map_gen import MapGenParams, StructMapGenerator
-from uav_env.visualize import plot_cloud_matplotlib, show_open3d
+from uav_env.visualize import plot_cloud_matplotlib, plot_environment_matplotlib, show_open3d
 
 
 def load_config(path: Path) -> dict:
@@ -108,6 +108,9 @@ def main():
         [dyn.get("v_x_h", 0.1), dyn.get("v_y_h", 0.1), dyn.get("v_z_h", 0.0)], dtype=float
     )
     gen.init_params(grid_mp)
+    # ``MapGenParams`` are configuration, not defaults: assigning them here
+    # makes all params.* values in the YAML affect structured and mixed maps.
+    gen.mgpa = mgpa
 
     clear_pts = None
     use_3d = True
@@ -146,12 +149,22 @@ def main():
     show = (not args.no_show) and bool(cfg.get("visualize", True))
     if args.open3d or cfg.get("use_open3d", False):
         show_open3d(last_cloud, title="Structure map")
-    else:
+    elif mcfg.get("simple_2d", False) or clear_pts is not None:
+        # A cleared cloud may intentionally differ from the in-memory grid, so
+        # retain the point renderer for this legacy export-only mode.
         plot_cloud_matplotlib(
             last_cloud,
             title="Structure map",
             save_path=fig_path,
             show=show,
+        )
+    else:
+        plot_environment_matplotlib(
+            gen,
+            title=f"Structure map: {ecfg.get('type', 'structured')}",
+            save_path=fig_path,
+            show=show,
+            environment_type=ecfg.get("type", "structured"),
         )
 
 

@@ -54,7 +54,7 @@ if str(ROOT) not in sys.path:
 from uav_env.grid_map import BasicMapParams, GridMapParams
 from uav_env.map_io import clear_near_positions, load_clear_csv, write_pcd
 from uav_env.struct_map_gen import MapGenParams, StructMapGenerator
-from uav_env.visualize import plot_cloud_matplotlib
+from uav_env.visualize import plot_cloud_matplotlib, plot_environment_matplotlib
 
 
 # The order must match the six comma-separated values accepted by --weights.
@@ -261,13 +261,26 @@ def main() -> None:
             image_path = images_dir / f"{stem}.png"
             write_pcd(pcd_path, cloud)
             np.save(npy_path, cloud)
-            plot_cloud_matplotlib(
-                cloud,
-                title=f"Environment {index}: {environment_type}",
-                save_path=image_path,
-                show=False,
-                max_points=args.max_plot_points,
-            )
+            # Render the generator's existing occupied cells as exposed voxel
+            # faces.  The PCD/NPY data and collision grid are untouched.
+            if clear_points is None:
+                plot_environment_matplotlib(
+                    generator,
+                    title=f"Environment {index}: {environment_type}",
+                    save_path=image_path,
+                    show=False,
+                    environment_type=environment_type,
+                )
+            else:
+                # Clear zones are an export-time legacy filter and therefore
+                # need a cloud renderer rather than the unchanged grid.
+                plot_cloud_matplotlib(
+                    cloud,
+                    title=f"Environment {index}: {environment_type}",
+                    save_path=image_path,
+                    show=False,
+                    max_points=args.max_plot_points,
+                )
 
             record = {
                 "index": index,

@@ -192,6 +192,45 @@ python scripts/generate_environment_dataset.py -x 500 --seed 42 \
   --weights 7,5,3,2,2,1 --output-dir outputs/uav_dataset
 ```
 
+### Validate environment visualisation
+
+The ordinary dataset generator now renders occupied voxels as exterior faces:
+blocks and corridor walls are solid surfaces rather than point layers. Terrain
+and mountain previews use the generator's original continuous height field;
+the collision and exported point-cloud representation remain the voxel map.
+
+Run the repeatable validation suite from the repository root:
+
+```bash
+python tests/validate_environment_visualization.py
+```
+
+It writes only to `outputs/visualization_validation/` and creates baseline
+scatter images, improved images, one image for each primary environment type,
+`comparison_grid.png`, and JSON/text validation reports. The suite covers
+structured, blocks, random land, mountains, corridor, and (by default) mixed.
+
+```bash
+# Use a different reproducible base seed.
+python tests/validate_environment_visualization.py --seed 42
+
+# Run only the five required primary environment types.
+python tests/validate_environment_visualization.py --no-mixed
+
+# Deliberately exaggerate Z only for the display; map coordinates stay unchanged.
+python tests/validate_environment_visualization.py --vertical-exaggeration 2
+```
+
+On Windows, open the labelled comparison with:
+
+```powershell
+Start-Process outputs/visualization_validation/comparison_grid.png
+```
+
+The terrain report explicitly records the unavoidable sub-voxel difference
+between the continuous height field and its centre-sampled collision voxels.
+All other improved surfaces are exact exposed faces of occupied voxels.
+
 ### 2) Load a maze image as a 3D map
 
 ```bash
