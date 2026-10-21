@@ -123,10 +123,13 @@ Outputs:
 - `outputs/dataset/pt0.pcd` / `pt0.npy`
 - `outputs/structure_map_preview.png`
 
-Tune obstacle density in `config/structure_map.yaml`:
+Set the shared target obstacle occupancy in `config/structure_map.yaml`.
+The `*_ratio` values divide that target by relative weight; they are not
+independent occupancy percentages:
 
 ```yaml
 params:
+  occupancy_ratio: 0.5
   cylinder_ratio: 0.01
   circle_ratio: 0.005
   gate_ratio: 0.005
@@ -134,22 +137,28 @@ params:
   poly_ratio: 0.005
 ```
 
-Higher ratios → denser / harder environments for planners.
+`occupancy_ratio: 0.5` targets 50% of valid map voxels occupied for every
+environment preset. Raise or lower this value to change overall density. The
+obstacle-family ratios only change the primitive mix in `random_land` and
+`mixed`; `mixed` divides its target evenly between terrain and primitives.
+Other preset options continue to determine the layout and shape of their
+obstacles while the generator adjusts the voxel count to the shared target.
 
 ### Environment presets
 
 `config/structure_map.yaml` also has an `environment.type` option. The default
-is `structured`, which uses the obstacle ratios above. Set it to one of the
-following values to generate a different family of environments:
+is `random_land`, which randomly places each configured primitive type
+throughout the 3D map. Set it to one of the following values to generate a
+different family of environments:
 
 | Type | Generated environment | Main YAML controls |
 |------|-----------------------|--------------------|
-| `structured` | Random cylinders, gates, ellipsoids, and polyhedra. | `params.*_ratio`, `params.w1/w2/w3` |
-| `corridor` | Long corridor with walls and alternating partition openings. | `width`, `wall_height`, `partition_spacing`, `opening_width` |
-| `random_land` | Solid, reproducible smoothed random height field. | `base_height`, `height_range`, `smoothing_passes` |
+| `structured` | Randomly positioned buildings and pillars spanning the full Z axis. | `params.occupancy_ratio`, `environment.min_width`, `environment.max_width` |
+| `corridor` | Full-map maze with connected rooms, walls, and optional loops. | `wall_thickness`, `opening_width`, `extra_openings` |
+| `random_land` | Fewer, map-scaled cylinders, gates, ellipsoids, and polyhedra. | `params.occupancy_ratio`, `params.*_ratio` |
 | `mountains` | Solid terrain made from random Gaussian hills. | `mountain_count`, `peak_height`, `spread_min`, `spread_max` |
 | `blocks` | Dense city-like field of rectangular buildings. | `building_count`, `min_width`, `max_width`, `min_height`, `max_height` |
-| `mixed` | Random land with the usual primitive obstacles placed over it. | random-land options plus `params.*_ratio` |
+| `mixed` | Smoothed terrain with fewer, larger primitive obstacles. | terrain options plus `params.*_ratio` |
 
 `random_terrain`/`land`, `mountain`, and `urban`/`city` are also accepted
 aliases for `random_land`, `mountains`, and `blocks`, respectively.
@@ -167,6 +176,11 @@ environment:
 
 All preset randomness is controlled by the existing `params.seed`; when more
 than one dataset sample is requested, sample `i` uses `seed + i`.
+Every generated static environment reserves a clearance tunnel between the
+voxel containing the map origin and the opposite in-bounds corner voxel. This
+keeps a 6-connected route open for planning, including when obstacles are
+trimmed or added to meet `params.occupancy_ratio`. The corridor preset is a
+maze spanning both horizontal map axes rather than a single passage.
 
 ### Build a random, unbalanced environment dataset
 
@@ -196,8 +210,10 @@ python scripts/generate_environment_dataset.py -x 500 --seed 42 \
 
 The ordinary dataset generator now renders occupied voxels as exterior faces:
 blocks and corridor walls are solid surfaces rather than point layers. Terrain
-and mountain previews use the generator's original continuous height field;
-the collision and exported point-cloud representation remain the voxel map.
+and mountain previews use the continuous height field when it matches the
+occupied columns; where the reserved route cuts through terrain, previews fall
+back to the occupancy surface. The collision and exported point-cloud
+representation remain the voxel map.
 
 Run the repeatable validation suite from the repository root:
 

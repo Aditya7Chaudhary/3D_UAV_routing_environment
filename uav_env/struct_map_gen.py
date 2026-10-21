@@ -28,22 +28,23 @@ does not regenerate their geometry.
 
 ENVIRONMENT PRESETS
 -------------------
-``structured`` keeps the original primitive-obstacle generator. ``corridor``
-creates bounded passages with alternating openings. ``random_land`` creates a
-smoothed random height field, ``mountains`` sums Gaussian hills, and ``blocks``
-creates rectangular buildings. ``mixed`` lays structured obstacles over random
-land.  Presets are selected through the ``environment`` YAML section.
-
-The generator produces geometry and occupancy only; it does not choose UAV
-start/goal positions or plan routes.
+``random_land`` randomly places a modest number of larger primitive obstacles.
+``structured`` creates randomly arranged buildings and pillars spanning the
+full map height. ``corridor`` fills the whole map with a connected 2.5D maze,
+``mountains`` sums Gaussian hills, and ``blocks`` creates buildings.
+Every preset keeps a clearance-bounded 6-connected free path from the origin
+voxel ``(0, 0, 0)`` to the opposite corner so a drone planner has at least one
+feasible route. Presets are selected through the ``environment`` YAML section.
 ===============================================================================
 """
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 
 import numpy as np
+from scipy.ndimage import binary_dilation
 
 from .geo_map import GeoMap
 from .grid_map import GridMap, GridMapParams
@@ -52,13 +53,15 @@ from .shapes import CircleGate, Cylinder, Ellipsoid, Polyhedron, RectGate
 
 @dataclass
 class MapGenParams:
-    """Configure target obstacle density, dimensions, and sampling noise.
+    """Configure total obstacle density, type weights, dimensions, and noise.
 
-    Each ``*_ratio`` is multiplied by the total number of map voxels to obtain
-    a target count.  ``w1`` through ``w3`` define the distributions used for
+    ``occupancy_ratio`` sets the total occupied-voxel target. The ``*_ratio``
+    values are relative weights that divide this target between primitive
+    obstacle types. ``w1`` through ``w3`` define the distributions used for
     obstacle widths and radii; their historical names are retained to match
     the source implementation and existing YAML files.
     """
+    occupancy_ratio: float = 0.5
     cylinder_ratio: float = 0.01
     circle_ratio: float = 0.005
     gate_ratio: float = 0.005
@@ -84,6 +87,7 @@ class StructMapGenerator:
         self.geo_map = GeoMap()
         self.mpa = GridMapParams()
         self.mgpa = MapGenParams()
+        self.terrain_height_field: tuple[np.ndarray, np.ndarray, np.ndarray] | None = None
         self.rng = np.random.default_rng(1)
         self.vel_h = np.array([0.1, 0.1, 0.0])
         self.cyl_list: list[Cylinder] = []
@@ -97,11 +101,13 @@ class StructMapGenerator:
         mpa.basic_mp.finalize()
         self.grid_map.init_map(mpa)
         self.mpa = mpa
+        self.terrain_height_field = None
 
     def change_res(self, res: float):
         """Reinitialise the grid using the current map bounds and new resolution."""
         self.mpa.resolution = res
         self.grid_map.init_map(self.mpa)
+        self.terrain_height_field = None
 
     def get_pc(self) -> np.ndarray:
         """Return a copy of the generated 3D occupied-point cloud."""
@@ -121,6 +127,7 @@ class StructMapGenerator:
         self.cloud_map = np.zeros((0, 3), dtype=float)
         self.grid_map.clear_all_occ()
         self.geo_map.clear_all()
+        self.terrain_height_field = None
 
     def _append_points(self, pts: list[np.ndarray]):
         """Append newly accepted obstacle points to the aggregate cloud.
@@ -135,7 +142,7 @@ class StructMapGenerator:
             arr if self.cloud_map.size == 0 else np.vstack([self.cloud_map, arr])
         )
 
-    def update_pts(self, geo_rep) -> int:
+    def update_pts(self, geo_rep, max_points: int | None = None) -> int:
         """Rasterise a solid shape by testing voxels in its bounding region.
 
         Accepted voxel centres are stored in the grid, global cloud, and the
@@ -156,10 +163,16 @@ class StructMapGenerator:
         # box.  ``is_inside`` removes points that are outside the actual
         # curved, faceted, or rotated solid.
         for r in range(-wid[0], wid[0]):
+            if max_points is not None and cur >= max_points:
+                break
             rx = r * res
             for s in range(-wid[1], wid[1]):
+                if max_points is not None and cur >= max_points:
+                    break
                 sy = s * res
                 for t in range(-wid[2], wid[2]):
+                    if max_points is not None and cur >= max_points:
+                        break
                     ob_pt = cpt + np.array([rx, sy, t * res])
                     # A non-zero status includes occupied cells and cells
                     # outside the map, so neither is added again.
@@ -181,7 +194,7 @@ class StructMapGenerator:
                 if self.rng.random() >= self.mgpa.w1:
                     continue
                 noisy = ob_pt + noise[i]
-                if not self.grid_map.is_in_map(noisy):
+                if self.grid_map.is_occ(noisy) != 1:
                     continue
                 self.grid_map.set_occ(noisy)
                 new_pts.append(noisy)
@@ -190,7 +203,7 @@ class StructMapGenerator:
         self._append_points(new_pts)
         return cur
 
-    def update_pts_light(self, geo_rep) -> int:
+    def update_pts_light(self, geo_rep, max_points: int | None = None) -> int:
         """Rasterise a rotated gate by sampling its local thickness and frame.
 
         This avoids scanning the larger axis-aligned world-space bounds that
@@ -212,12 +225,20 @@ class StructMapGenerator:
         # Sample in local coordinates, then rotate each point into world space.
         # This is much cheaper than scanning empty cells around a thin gate.
         for t in range(-width, width):
+            if max_points is not None and cur >= max_points:
+                break
             tx = t * res
             for r in range(wid_num1):
+                if max_points is not None and cur >= max_points:
+                    break
                 ry = r * res
                 for s in range(wid_num2):
+                    if max_points is not None and cur >= max_points:
+                        break
                     sz = s * res
                     for i in range(4):
+                        if max_points is not None and cur >= max_points:
+                            break
                         local = np.array([tx, ry * signs[0, i], sz * signs[1, i]])
                         ob_pt = cpt + rot @ local
                         if not geo_rep.is_inside(ob_pt):
@@ -235,7 +256,7 @@ class StructMapGenerator:
                 if self.rng.random() >= self.mgpa.w1:
                     continue
                 noisy = ob_pt + self.rng.normal(0.0, self.mgpa.w1, size=3)
-                if not self.grid_map.is_in_map(noisy):
+                if self.grid_map.is_occ(noisy) != 1:
                     continue
                 self.grid_map.set_occ(noisy)
                 new_pts.append(noisy)
@@ -378,6 +399,300 @@ class StructMapGenerator:
         self.grid_map.fill_map(np.asarray(points, dtype=float))
         self.cloud_map = self.grid_map.publish_map()
 
+    def _occupied_bool(self) -> np.ndarray:
+        """Return the in-bounds occupancy mask shaped ``(nx, ny, nz)``."""
+        xs, ys, zs = self._valid_grid_axes()
+        grid = self.grid_map.occupancy.reshape(self.mpa.map_grid_size) > self.mpa.min_thrd
+        return grid[: len(xs), : len(ys), : len(zs)].copy()
+
+    def _cloud_from_occupied(self, occupied: np.ndarray) -> np.ndarray:
+        """Convert an occupancy mask into world-space voxel-centre points."""
+        xs, ys, zs = self._valid_grid_axes()
+        indices = np.argwhere(occupied)
+        if indices.size == 0:
+            return np.zeros((0, 3), dtype=float)
+        return np.column_stack((xs[indices[:, 0]], ys[indices[:, 1]], zs[indices[:, 2]]))
+
+    def _planning_endpoints(self) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+        """Return start ``(0,0,0)`` and opposite-corner voxel indices."""
+        xs, ys, zs = self._valid_grid_axes()
+        if not len(xs) or not len(ys) or not len(zs):
+            return (0, 0, 0), (0, 0, 0)
+        return (0, 0, 0), (len(xs) - 1, len(ys) - 1, len(zs) - 1)
+
+    def _planning_clearance(self) -> int:
+        """Clearance in voxels, enough for a small drone around the reserved path."""
+        return max(1, int(np.ceil(0.4 / max(self.mpa.resolution, 1e-9))))
+
+    def _dilate_mask(self, mask: np.ndarray, radius: int) -> np.ndarray:
+        """Expand a Boolean mask by Chebyshev radius ``radius`` voxels."""
+        if radius <= 0:
+            return mask.copy()
+        footprint = np.ones((2 * radius + 1,) * mask.ndim, dtype=bool)
+        return binary_dilation(mask, structure=footprint)
+
+    def _free_path(self, occupied: np.ndarray, start, goal, clearance: int):
+        """Return a 6-connected voxel path if one exists with the given clearance."""
+        blocked = self._dilate_mask(occupied, clearance)
+        blocked[start] = False
+        blocked[goal] = False
+        shape = occupied.shape
+        if any(c < 0 or c >= shape[i] for i, c in enumerate(start)):
+            return None
+        if any(c < 0 or c >= shape[i] for i, c in enumerate(goal)):
+            return None
+        if blocked[start] or blocked[goal]:
+            return None
+        parent = {start: None}
+        queue = deque([start])
+        goal_t = tuple(goal)
+        while queue:
+            cur = queue.popleft()
+            if cur == goal_t:
+                path = []
+                node = cur
+                while node is not None:
+                    path.append(node)
+                    node = parent[node]
+                path.reverse()
+                return path
+            x, y, z = cur
+            for dx, dy, dz in ((1, 0, 0), (-1, 0, 0), (0, 1, 0), (0, -1, 0), (0, 0, 1), (0, 0, -1)):
+                nxt = (x + dx, y + dy, z + dz)
+                if nxt in parent:
+                    continue
+                if not (0 <= nxt[0] < shape[0] and 0 <= nxt[1] < shape[1] and 0 <= nxt[2] < shape[2]):
+                    continue
+                if blocked[nxt]:
+                    continue
+                parent[nxt] = cur
+                queue.append(nxt)
+        return None
+
+    def _manhattan_segment(self, a, b) -> list[tuple[int, int, int]]:
+        """Connect two voxels with axis-aligned steps."""
+        x, y, z = a
+        voxels = [(x, y, z)]
+        while (x, y, z) != tuple(b):
+            if x != b[0]:
+                x += 1 if b[0] > x else -1
+            elif y != b[1]:
+                y += 1 if b[1] > y else -1
+            else:
+                z += 1 if b[2] > z else -1
+            voxels.append((x, y, z))
+        return voxels
+
+    def _winding_path(self, start, goal, shape) -> list[tuple[int, int, int]]:
+        """Build a reproducible winding polyline from start to the opposite corner."""
+        nx, ny, nz = shape
+        waypoints = [tuple(start)]
+        n_wp = 3 if min(shape) >= 6 else 1
+        for _ in range(n_wp):
+            waypoints.append(
+                (
+                    int(self.rng.integers(0, nx)),
+                    int(self.rng.integers(0, ny)),
+                    int(self.rng.integers(0, nz)),
+                )
+            )
+        waypoints.append(tuple(goal))
+        voxels = []
+        for a, b in zip(waypoints, waypoints[1:]):
+            voxels.extend(self._manhattan_segment(a, b)[1 if voxels else 0 :])
+        return voxels
+
+    def _carve_voxels(self, occupied: np.ndarray, voxels, clearance: int) -> np.ndarray:
+        """Clear a Chebyshev ball around each path voxel."""
+        result = occupied.copy()
+        nx, ny, nz = result.shape
+        r = max(int(clearance), 0)
+        for x, y, z in voxels:
+            x0, x1 = max(0, x - r), min(nx, x + r + 1)
+            y0, y1 = max(0, y - r), min(ny, y + r + 1)
+            z0, z1 = max(0, z - r), min(nz, z + r + 1)
+            result[x0:x1, y0:y1, z0:z1] = False
+        return result
+
+    def _protect_path(self, occupied: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+        """Guarantee a free path from origin to the opposite corner.
+
+        Existing maze-like free space is reused when it already connects the
+        endpoints. Otherwise a winding tunnel is carved. The returned protected
+        mask must stay free while occupancy is later fitted to the target.
+        """
+        start, goal = self._planning_endpoints()
+        clearance = self._planning_clearance()
+        result = occupied.copy()
+        result[start] = False
+        result[goal] = False
+        path = self._free_path(result, start, goal, clearance)
+        if path is None:
+            carved = self._winding_path(start, goal, result.shape)
+            result = self._carve_voxels(result, carved, clearance)
+            path = carved
+        protected = np.zeros_like(result)
+        for x, y, z in path:
+            protected[x, y, z] = True
+        protected = self._dilate_mask(protected, clearance)
+        protected[start] = True
+        protected[goal] = True
+        result[protected] = False
+        return result, protected
+
+    def _apply_occupancy_target(
+        self,
+        occupied: np.ndarray,
+        target: int,
+        protected_free: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Grow or peel solid obstacles until ``target`` voxels are occupied.
+
+        Occupancy is adjusted only on the obstacle frontier so solids stay
+        clustered. Protected free voxels — the reserved start-goal path —
+        are never filled. Random independent voxel flips are avoided because
+        they create a crowded, speckled look even at modest occupancy.
+        """
+        result = occupied.copy()
+        protected = (
+            np.zeros_like(result)
+            if protected_free is None
+            else np.asarray(protected_free, dtype=bool)
+        )
+        result[protected] = False
+        capacity = int(result.size - protected.sum())
+        target = min(max(int(target), 0), capacity)
+        neighbourhood = np.ones((3, 3, 3), dtype=bool)
+
+        while int(result.sum()) > target:
+            surface = result & binary_dilation(~result, structure=neighbourhood)
+            candidates = np.argwhere(surface if surface.any() else result)
+            remaining = int(result.sum()) - target
+            count = min(remaining, len(candidates))
+            if count == 0:
+                break
+            selected = self.rng.choice(len(candidates), size=count, replace=False)
+            result[tuple(candidates[selected].T)] = False
+            result[protected] = False
+
+        while int(result.sum()) < target:
+            frontier = binary_dilation(result, structure=neighbourhood) & ~result & ~protected
+            if not frontier.any():
+                frontier = ~result & ~protected
+            candidates = np.argwhere(frontier)
+            remaining = target - int(result.sum())
+            count = min(remaining, len(candidates))
+            if count == 0:
+                break
+            selected = self.rng.choice(len(candidates), size=count, replace=False)
+            result[tuple(candidates[selected].T)] = True
+        return result
+
+    def _sync_height_field(self, occupied: np.ndarray):
+        """Keep a height field only when occupancy is still a filled terrain column."""
+        xs, ys, zs = self._valid_grid_axes()
+        if occupied.shape != (len(xs), len(ys), len(zs)) or not len(zs):
+            self.terrain_height_field = None
+            return
+        heights = np.full((len(xs), len(ys)), np.nextafter(zs[0], -np.inf))
+        for i in range(len(xs)):
+            for j in range(len(ys)):
+                column = occupied[i, j]
+                if not column.any():
+                    continue
+                last = int(np.max(np.flatnonzero(column)))
+                if not np.all(column[: last + 1]):
+                    self.terrain_height_field = None
+                    return
+                heights[i, j] = zs[last]
+        self.terrain_height_field = (xs.copy(), ys.copy(), heights)
+
+    def _finalize_for_planning(self, target: int, env_type: str):
+        """Carve a start-goal route, restore the occupancy target, and sync maps."""
+        occupied, protected = self._protect_path(self._occupied_bool())
+        if env_type == "structured":
+            occupied = self._refill_full_columns(occupied, target, protected)
+        else:
+            occupied = self._apply_occupancy_target(occupied, target, protected)
+        if env_type in {"mountains", "mixed"}:
+            self._sync_height_field(occupied)
+        points = self._cloud_from_occupied(occupied)
+        self.grid_map.clear_all_occ()
+        self.grid_map.fill_map(points)
+        self.cloud_map = self.grid_map.publish_map()
+        for shapes in (
+            self.geo_map.cylinder,
+            self.geo_map.circle_gate,
+            self.geo_map.rect_gate,
+            self.geo_map.ellipsoid,
+            self.geo_map.polyhedron,
+        ):
+            for shape in shapes:
+                shape.cloud = [point for point in shape.cloud if self.grid_map.is_occ(point) == 1]
+
+    def _refill_full_columns(self, occupied: np.ndarray, target: int, protected: np.ndarray) -> np.ndarray:
+        """Restore structured occupancy using whole-height pillars only."""
+        result = occupied.copy()
+        result[protected] = False
+        nz = result.shape[2]
+        columns = result.any(axis=2)
+        result = np.repeat(columns[:, :, None], nz, axis=2)
+        result[protected] = False
+        current = int(result.sum())
+        target = min(max(int(target), 0), int(result.size - protected.sum()))
+        blocked_xy = protected.any(axis=2)
+        if current < target:
+            free_xy = np.argwhere(~columns & ~blocked_xy)
+            need = (target - current + nz - 1) // nz
+            if len(free_xy) and need:
+                take = min(need, len(free_xy))
+                pick = self.rng.choice(len(free_xy), size=take, replace=False)
+                for i, j in free_xy[pick]:
+                    result[i, j, :] = True
+                result[protected] = False
+        if int(result.sum()) > target:
+            result = self._apply_occupancy_target(result, target, protected)
+        elif int(result.sum()) < target:
+            result = self._apply_occupancy_target(result, target, protected)
+        return result
+
+    def _planning_radius(self) -> float:
+        """Sample a planning-friendly obstacle radius from the map size.
+
+        Tiny historical ``w1``/``w2`` values created thousands of stick-like
+        primitives at 20% occupancy. Scaling with map extent yields fewer,
+        well-separated solids that still meet the voxel target.
+        """
+        xy = float(np.min(self.mpa.basic_mp.map_size[:2]))
+        res = self.mpa.resolution
+        maximum = max(res, 0.22 * xy)
+        lo = min(max(3 * res, 0.05 * xy), maximum)
+        hi = min(max(lo + res, 0.12 * xy), maximum)
+        return float(self.rng.uniform(lo, hi)) if hi > lo else lo
+
+    def _planning_height(self) -> float:
+        """Sample an obstacle height that leaves some vertical fly-over room."""
+        z = float(self.mpa.basic_mp.map_size[2])
+        res = self.mpa.resolution
+        lo = max(2 * res, 0.25 * z)
+        hi = max(lo + res, 0.75 * z)
+        return float(self.rng.uniform(lo, hi))
+
+    def _fit_occupancy(self, points: np.ndarray, target: int) -> np.ndarray:
+        """Adjust a generated cloud to an exact count of occupied map voxels."""
+        xs, ys, zs = self._valid_grid_axes()
+        shape = (len(xs), len(ys), len(zs))
+        occupied = np.zeros(shape, dtype=bool)
+        if points.size:
+            indices = np.floor(
+                (np.asarray(points, dtype=float) - self.mpa.basic_mp.map_origin)
+                / self.mpa.resolution
+            ).astype(int)
+            valid = np.all((indices >= 0) & (indices < np.asarray(shape)), axis=1)
+            occupied[tuple(indices[valid].T)] = True
+        occupied = self._apply_occupancy_target(occupied, target)
+        return self._cloud_from_occupied(occupied)
+
     def _height_field_cloud(self, heights: np.ndarray) -> np.ndarray:
         """Fill all voxels from map ground up to a height field.
 
@@ -386,6 +701,11 @@ class StructMapGenerator:
         and landforms solid obstacles rather than a single thin visual shell.
         """
         xs, ys, zs = self._valid_grid_axes()
+        self.terrain_height_field = (
+            xs.copy(),
+            ys.copy(),
+            np.asarray(heights, dtype=float).copy(),
+        )
         points = []
         for i, x in enumerate(xs):
             for j, y in enumerate(ys):
@@ -393,6 +713,48 @@ class StructMapGenerator:
                 for z in zs[zs <= heights[i, j]]:
                     points.append([x, y, z])
         return np.asarray(points, dtype=float) if points else np.zeros((0, 3))
+
+    def _fit_height_field_cloud(self, heights: np.ndarray, target: int) -> np.ndarray:
+        """Offset a height field to an exact voxel count without breaking columns."""
+        xs, ys, zs = self._valid_grid_axes()
+        heights = np.asarray(heights, dtype=float)
+        if heights.shape != (len(xs), len(ys)):
+            raise ValueError("Height field dimensions must match the map's X-Y grid.")
+        if not len(zs):
+            return np.zeros((0, 3), dtype=float)
+
+        capacity = len(xs) * len(ys) * len(zs)
+        target = min(max(int(target), 0), capacity)
+        if target == 0:
+            fitted = np.minimum(heights, np.nextafter(zs[0], -np.inf))
+        elif target == capacity:
+            fitted = np.full_like(heights, zs[-1])
+        else:
+            # Each threshold is the vertical offset at which one voxel centre
+            # enters its column. Resolving ties per column keeps the exact
+            # target while retaining the smooth field everywhere else.
+            thresholds = zs[None, None, :] - heights[:, :, None]
+            offset = np.partition(thresholds.ravel(), target - 1)[target - 1]
+            below = thresholds < offset
+            tied = thresholds == offset
+            column_counts = below.sum(axis=2)
+            tie_count = target - int(column_counts.sum())
+            tie_columns = np.argwhere(tied)[:tie_count]
+            column_counts[tie_columns[:, 0], tie_columns[:, 1]] += 1
+
+            fitted = heights + offset
+            nonempty = column_counts > 0
+            fitted[nonempty] = np.maximum(
+                    fitted[nonempty], zs[column_counts[nonempty] - 1]
+            )
+            partial = nonempty & (column_counts < len(zs))
+            fitted[partial] = np.minimum(
+                    fitted[partial],
+                    np.nextafter(zs[column_counts[partial]], -np.inf),
+            )
+            fitted[column_counts == len(zs)] = zs[-1]
+
+        return self._height_field_cloud(fitted)
 
     def _smooth_field(self, field: np.ndarray, passes: int) -> np.ndarray:
         """Smooth a random height field with repeated 3-by-3 neighbour averages."""
@@ -407,7 +769,7 @@ class StructMapGenerator:
             ) / 9.0
         return result
 
-    def _random_land_cloud(self, options: dict) -> np.ndarray:
+    def _random_land_cloud(self, options: dict, target: int | None = None) -> np.ndarray:
         """Generate solid terrain from a smoothed, seeded random height field.
 
         Options:
@@ -425,9 +787,11 @@ class StructMapGenerator:
         z0 = self.mpa.basic_mp.map_origin[2]
         z_max = self.mpa.basic_mp.max_range[2] - 0.5 * self.mpa.resolution
         heights = np.clip(z0 + base + height_range * normalised, z0, z_max)
+        if target is not None:
+            return self._fit_height_field_cloud(heights, target)
         return self._height_field_cloud(heights)
 
-    def _mountain_cloud(self, options: dict) -> np.ndarray:
+    def _mountain_cloud(self, options: dict, target: int | None = None) -> np.ndarray:
         """Generate solid Gaussian hills over a flat base terrain.
 
         Options control the number, maximum height, and horizontal spread of
@@ -451,7 +815,10 @@ class StructMapGenerator:
             # The exponent creates radial slopes that decay smoothly from a peak.
             heights += peak * np.exp(-((x_grid - cx) ** 2 + (y_grid - cy) ** 2) / (2 * spread**2))
         z_max = maximum[2] - 0.5 * self.mpa.resolution
-        return self._height_field_cloud(np.clip(heights, origin[2], z_max))
+        heights = np.clip(heights, origin[2], z_max)
+        if target is not None:
+            return self._fit_height_field_cloud(heights, target)
+        return self._height_field_cloud(heights)
 
     def _blocks_cloud(self, options: dict) -> np.ndarray:
         """Generate solid rectangular buildings separated by open streets.
@@ -480,36 +847,107 @@ class StructMapGenerator:
         return np.array([[xs[i], ys[j], zs[k]] for i, j, k in idx], dtype=float)
 
     def _corridor_cloud(self, options: dict) -> np.ndarray:
-        """Generate a long corridor bounded by walls and alternating partitions.
+        """Fill the whole map with a connected 2.5D maze of passages and walls.
 
-        The corridor runs along global X.  Parallel Y walls define its width;
-        cross-wall partitions create alternating openings, requiring a planner
-        to follow a winding route instead of travelling straight through.
+        Passages start at the origin corner and reach the opposite XY corner so
+        a drone can traverse the maze instead of a single straight corridor.
+        Wall height defaults to the full map so the route cannot skip the maze
+        by flying over it. Extra loops keep the maze from being a unique path.
         """
         xs, ys, zs = self._valid_grid_axes()
-        occupied = np.zeros((len(xs), len(ys), len(zs)), dtype=bool)
+        nx, ny, nz = len(xs), len(ys), len(zs)
+        if min(nx, ny, nz) == 0:
+            return np.zeros((0, 3), dtype=float)
         res = self.mpa.resolution
-        width = max(3, int(np.ceil(float(options.get("width", 6.0)) / res)))
-        center = len(ys) // 2
-        y_low = max(0, center - width // 2)
-        y_high = min(len(ys) - 1, center + width // 2)
-        wall_layers = min(len(zs), max(1, int(np.ceil(float(options.get("wall_height", 2.5)) / res))))
-        # The two long walls form the outer boundary of the passage.
-        occupied[:, y_low, :wall_layers] = True
-        occupied[:, y_high, :wall_layers] = True
-        spacing = max(1, int(np.ceil(float(options.get("partition_spacing", 6.0)) / res)))
-        opening = max(1, int(np.ceil(float(options.get("opening_width", 1.5)) / res)))
-        for number, x in enumerate(range(spacing, len(xs), spacing)):
-            # Alternate opening positions near opposite walls to create turns.
-            if number % 2 == 0:
-                gap_start = y_low + 1
+        passage = max(2, int(np.round(float(options.get("opening_width", 2.0)) / res)))
+        if "width" in options:
+            passage = max(passage, int(np.round(float(options["width"]) / res / 4.0)))
+        ratio = float(np.clip(self.mgpa.occupancy_ratio, 0.0, 1.0))
+        default_wall = max(1, int(np.ceil(ratio * passage / max(1.0 - ratio, 1e-9))))
+        wall = max(
+            1,
+            int(np.round(float(options.get("wall_thickness", default_wall * res)) / res)),
+        )
+        wall = min(wall, max(1, min(nx, ny) // 6))
+        while 2 * passage + wall > min(nx, ny) and passage > 2:
+            passage -= 1
+        while 2 * passage + wall > min(nx, ny) and wall > 1:
+            wall -= 1
+        period = passage + wall
+        ncx = max(2, (nx + wall) // period)
+        ncy = max(2, (ny + wall) // period)
+        while ncx > 2 and ncx * period - wall > nx:
+            ncx -= 1
+        while ncy > 2 and ncy * period - wall > ny:
+            ncy -= 1
+
+        visited = np.zeros((ncx, ncy), dtype=bool)
+        east_open = np.zeros((ncx, ncy), dtype=bool)
+        north_open = np.zeros((ncx, ncy), dtype=bool)
+        stack = [(0, 0)]
+        visited[0, 0] = True
+        while stack:
+            i, j = stack[-1]
+            neighbors = []
+            if i > 0 and not visited[i - 1, j]:
+                neighbors.append((i - 1, j, "w"))
+            if i < ncx - 1 and not visited[i + 1, j]:
+                neighbors.append((i + 1, j, "e"))
+            if j > 0 and not visited[i, j - 1]:
+                neighbors.append((i, j - 1, "s"))
+            if j < ncy - 1 and not visited[i, j + 1]:
+                neighbors.append((i, j + 1, "n"))
+            if not neighbors:
+                stack.pop()
+                continue
+            ni, nj, direction = neighbors[int(self.rng.integers(len(neighbors)))]
+            visited[ni, nj] = True
+            if direction == "e":
+                east_open[i, j] = True
+            elif direction == "w":
+                east_open[ni, nj] = True
+            elif direction == "n":
+                north_open[i, j] = True
             else:
-                gap_start = max(y_low + 1, y_high - opening)
-            gap_end = min(gap_start + opening, y_high)
-            occupied[x, y_low + 1 : y_high, :wall_layers] = True
-            occupied[x, gap_start:gap_end, :wall_layers] = False
-        idx = np.argwhere(occupied)
-        return np.array([[xs[i], ys[j], zs[k]] for i, j, k in idx], dtype=float)
+                north_open[ni, nj] = True
+            stack.append((ni, nj))
+
+        extra = int(options.get("extra_openings", max(1, ncx * ncy // 6)))
+        for _ in range(max(extra, 0)):
+            i = int(self.rng.integers(0, ncx))
+            j = int(self.rng.integers(0, ncy))
+            if self.rng.random() < 0.5 and i < ncx - 1:
+                east_open[i, j] = True
+            elif j < ncy - 1:
+                north_open[i, j] = True
+
+        def cell_x_range(i: int) -> tuple[int, int]:
+            start = i * period
+            stop = nx if i == ncx - 1 else min(start + passage, nx)
+            return start, max(stop, start + 1)
+
+        def cell_y_range(j: int) -> tuple[int, int]:
+            start = j * period
+            stop = ny if j == ncy - 1 else min(start + passage, ny)
+            return start, max(stop, start + 1)
+
+        occupied = np.ones((nx, ny, nz), dtype=bool)
+        for i in range(ncx):
+            x0, x1 = cell_x_range(i)
+            for j in range(ncy):
+                y0, y1 = cell_y_range(j)
+                occupied[x0:x1, y0:y1, :] = False
+                if i < ncx - 1 and east_open[i, j]:
+                    wx0 = x1
+                    wx1 = cell_x_range(i + 1)[0]
+                    occupied[wx0:wx1, y0:y1, :] = False
+                if j < ncy - 1 and north_open[i, j]:
+                    wy0 = y1
+                    wy1 = cell_y_range(j + 1)[0]
+                    occupied[x0:x1, wy0:wy1, :] = False
+        occupied[0, 0, :] = False
+        occupied[nx - 1, ny - 1, :] = False
+        return self._cloud_from_occupied(occupied)
 
     def generate_environment(self, environment: dict | None, seed: float, if_dyn: bool = False):
         """Generate a YAML-selected environment preset with a reproducible seed.
@@ -537,39 +975,84 @@ class StructMapGenerator:
         # for each environment family.
         env_type = aliases.get(env_type, env_type)
         self.rng = np.random.default_rng(int(seed))
+        self.terrain_height_field = None
+        valid_voxels = int(np.prod([len(axis) for axis in self._valid_grid_axes()]))
+        if not np.isfinite(self.mgpa.occupancy_ratio) or not 0 <= self.mgpa.occupancy_ratio <= 1:
+            raise ValueError("occupancy_ratio must be between 0 and 1.")
+        target_occupancy = int(round(valid_voxels * self.mgpa.occupancy_ratio))
         if env_type == "structured":
-            self.generate(if_dyn)
+            self._replace_with_cloud(self._structured_pillars(options))
         elif env_type == "corridor":
             self._replace_with_cloud(self._corridor_cloud(options))
         elif env_type == "random_land":
-            self._replace_with_cloud(self._random_land_cloud(options))
+            self.clear()
+            self._generate_planning_primitives(target_occupancy, if_dyn)
         elif env_type == "mountains":
-            self._replace_with_cloud(self._mountain_cloud(options))
+            self._replace_with_cloud(
+                self._mountain_cloud(options, target_occupancy)
+            )
         elif env_type == "blocks":
-            self._replace_with_cloud(self._blocks_cloud(options))
+            self._replace_with_cloud(
+                self._fit_occupancy(self._blocks_cloud(options), target_occupancy)
+            )
         elif env_type == "mixed":
-            # Terrain is placed first so primitive shapes avoid its occupied voxels.
-            self._replace_with_cloud(self._random_land_cloud(options))
-            self.generate(if_dyn)
+            # Split the shared target evenly between terrain and primitives.
+            terrain_target = target_occupancy // 2
+            terrain = self._random_land_cloud(options, terrain_target)
+            self._replace_with_cloud(terrain)
+            remaining = target_occupancy - len(terrain)
+            if remaining:
+                self._generate_planning_primitives(remaining, if_dyn)
         else:
             valid = "structured, corridor, random_land, mountains, blocks, mixed"
             raise ValueError(f"Unknown environment type {env_type!r}. Choose one of: {valid}.")
+        self._finalize_for_planning(target_occupancy, env_type)
 
-    def generate(self, dyn_mode: bool = False):
-        """Create each obstacle family until its target occupied-voxel count.
+    def _generate_planning_primitives(self, target: int, dyn_mode: bool):
+        """Generate fewer, map-scaled primitive obstacles for planning presets."""
+        axes = self._valid_grid_axes()
+        valid_voxels = int(np.prod([len(axis) for axis in axes]))
+        original_ratio = self.mgpa.occupancy_ratio
+        self.mgpa.occupancy_ratio = target / max(valid_voxels, 1)
+        try:
+            self.generate(dyn_mode, planning_friendly=True)
+        finally:
+            self.mgpa.occupancy_ratio = original_ratio
 
-        The ratios translate to desired counts in the full voxel volume.  Each
-        generated shape is rasterised immediately, preventing later shapes
-        from claiming already occupied cells.
+    def generate(self, dyn_mode: bool = False, planning_friendly: bool = False):
+        """Create each primitive family to its share of total target occupancy.
+
+        Family ratios are normalized as weights, so their absolute sum does
+        not change the configured total occupancy. Each shape is rasterised
+        immediately, preventing later shapes from claiming occupied cells.
+        ``planning_friendly`` scales primitive dimensions to the map so random
+        presets use fewer, larger obstacles than the legacy shape generator.
         """
         self.grid_map.set_uni_rand(self.rng)
-        # Convert physical volume to an approximate count of cubic voxels.
-        all_grids = int(np.ceil(self.mpa.basic_mp.map_volume / (self.mpa.resolution**3)))
-        cylinder_grids = int(np.ceil(all_grids * self.mgpa.cylinder_ratio))
-        circle_grids = int(np.ceil(all_grids * self.mgpa.circle_ratio))
-        gate_grids = int(np.ceil(all_grids * self.mgpa.gate_ratio))
-        ellip_grids = int(np.ceil(all_grids * self.mgpa.ellip_ratio))
-        poly_grids = int(np.ceil(all_grids * self.mgpa.poly_ratio))
+        axes = self._valid_grid_axes()
+        all_grids = int(np.prod([len(axis) for axis in axes]))
+        weights = np.asarray(
+            [
+                self.mgpa.cylinder_ratio,
+                self.mgpa.circle_ratio,
+                self.mgpa.gate_ratio,
+                self.mgpa.ellip_ratio,
+                self.mgpa.poly_ratio,
+            ],
+            dtype=float,
+        )
+        if not np.isfinite(weights).all() or np.any(weights < 0) or weights.sum() <= 0:
+            raise ValueError("Primitive obstacle ratios must be finite, non-negative, and sum to a positive value.")
+        if not np.isfinite(self.mgpa.occupancy_ratio) or not 0 <= self.mgpa.occupancy_ratio <= 1:
+            raise ValueError("occupancy_ratio must be between 0 and 1.")
+        target = int(round(all_grids * self.mgpa.occupancy_ratio))
+        raw_targets = target * weights / weights.sum()
+        family_targets = np.floor(raw_targets).astype(int)
+        remainder = target - int(family_targets.sum())
+        if remainder:
+            priority = np.argsort(-(raw_targets - family_targets))
+            family_targets[priority[:remainder]] += 1
+        cylinder_grids, circle_grids, gate_grids, ellip_grids, poly_grids = family_targets
 
         self.cyl_list.clear()
         self.cir_list.clear()
@@ -583,11 +1066,11 @@ class StructMapGenerator:
         cur = 0
         while cur < cylinder_grids:
             cpt = self.grid_map.get_uni_rand_pos()
-            h = self._rand_h()
-            w = 0.2 + self._rand_w()
+            h = self._planning_height() if planning_friendly else self._rand_h()
+            w = self._planning_radius() if planning_friendly else 0.2 + self._rand_w()
             cyl = Cylinder(cpt, w, h)
             cyl.set_vel(self._sample_vel(dyn_mode))
-            cur += self.update_pts(cyl)
+            cur += self.update_pts(cyl, cylinder_grids - cur)
             self.geo_map.add(cyl)
             if dyn_mode:
                 self.cyl_list.append(cyl)
@@ -597,13 +1080,18 @@ class StructMapGenerator:
         while cur < circle_grids:
             cpt = self.grid_map.get_uni_rand_pos()
             theta = self._rand_theta()
-            width = 0.1 + 0.2 * self._rand_radiu()
+            radius = self._planning_radius() if planning_friendly else self._rand_radiu()
+            width = 0.1 + 0.2 * radius
             bound = np.array(
-                [width, width + self._rand_radiu(), width + self._rand_radiu()]
+                [
+                    width,
+                    width + (self._planning_radius() if planning_friendly else self._rand_radiu()),
+                    width + (self._planning_radius() if planning_friendly else self._rand_radiu()),
+                ]
             )
             gate = CircleGate(cpt, bound, theta)
             gate.set_vel(self._sample_vel(dyn_mode))
-            cur += self.update_pts_light(gate)
+            cur += self.update_pts_light(gate, circle_grids - cur)
             self.geo_map.add(gate)
             if dyn_mode:
                 self.cir_list.append(gate)
@@ -613,13 +1101,18 @@ class StructMapGenerator:
         while cur < gate_grids:
             cpt = self.grid_map.get_uni_rand_pos()
             theta = self._rand_theta()
-            width = 0.1 + 0.2 * self._rand_radiu()
+            radius = self._planning_radius() if planning_friendly else self._rand_radiu()
+            width = 0.1 + 0.2 * radius
             bound = np.array(
-                [width, width + self._rand_radiu(), width + self._rand_radiu()]
+                [
+                    width,
+                    width + (self._planning_radius() if planning_friendly else self._rand_radiu()),
+                    width + (self._planning_radius() if planning_friendly else self._rand_radiu()),
+                ]
             )
             gate = RectGate(cpt, bound, theta)
             gate.set_vel(self._sample_vel(dyn_mode))
-            cur += self.update_pts_light(gate)
+            cur += self.update_pts_light(gate, gate_grids - cur)
             self.geo_map.add(gate)
             if dyn_mode:
                 self.gate_list.append(gate)
@@ -629,11 +1122,12 @@ class StructMapGenerator:
         while cur < ellip_grids:
             cpt = self.grid_map.get_uni_rand_pos()
             euler = np.array([self._rand_theta(), self._rand_theta(), self._rand_theta()])
-            bound = np.array([self._rand_radiu(), self._rand_radiu(), self._rand_radiu()])
+            radius = self._planning_radius if planning_friendly else self._rand_radiu
+            bound = np.array([radius(), radius(), radius()])
             ellip = Ellipsoid()
             ellip.init(cpt, bound, euler)
             ellip.set_vel(self._sample_vel(dyn_mode))
-            cur += self.update_pts(ellip)
+            cur += self.update_pts(ellip, ellip_grids - cur)
             self.geo_map.add(ellip)
             if dyn_mode:
                 self.ellip_list.append(ellip)
@@ -642,11 +1136,12 @@ class StructMapGenerator:
         cur = 0
         while cur < poly_grids:
             cpt = self.grid_map.get_uni_rand_pos()
-            bound = np.array([self._rand_radiu(), self._rand_radiu(), self._rand_radiu()])
+            radius = self._planning_radius if planning_friendly else self._rand_radiu
+            bound = np.array([radius(), radius(), radius()])
             poly = Polyhedron()
             poly.random_init(cpt, bound, self.rng)
             poly.set_vel(self._sample_vel(dyn_mode))
-            cur += self.update_pts(poly)
+            cur += self.update_pts(poly, poly_grids - cur)
             self.geo_map.add(poly)
             if dyn_mode:
                 self.poly_list.append(poly)
@@ -660,7 +1155,40 @@ class StructMapGenerator:
         print(f"+++ gates      : {100 * gate_grids / max(all_grids, 1):.2f}%")
         print(f"+++ ellipsoids : {100 * ellip_grids / max(all_grids, 1):.2f}%")
         print(f"+++ polytopes  : {100 * poly_grids / max(all_grids, 1):.2f}%")
-        print("++++++++++++++++++++++++++++++++++++++")
+
+    def _structured_pillars(self, options: dict) -> np.ndarray:
+        """Build randomly placed rectangular pillars spanning the full Z axis."""
+        xs, ys, zs = self._valid_grid_axes()
+        if not len(xs) or not len(ys) or not len(zs):
+            return np.zeros((0, 3), dtype=float)
+        if not np.isfinite(self.mgpa.occupancy_ratio) or not 0 <= self.mgpa.occupancy_ratio <= 1:
+            raise ValueError("occupancy_ratio must be between 0 and 1.")
+
+        target_columns = int(np.floor(len(xs) * len(ys) * self.mgpa.occupancy_ratio))
+        occupied = np.zeros((len(xs), len(ys)), dtype=bool)
+        res = self.mpa.resolution
+        min_width = max(1, int(np.ceil(float(options.get("min_width", 0.6)) / res)))
+        max_width = max(min_width, int(np.ceil(float(options.get("max_width", 2.0)) / res)))
+        max_attempts = max(100, target_columns * 20)
+        attempts = 0
+        while int(occupied.sum()) < target_columns and attempts < max_attempts:
+            attempts += 1
+            wx = min(int(self.rng.integers(min_width, max_width + 1)), len(xs))
+            wy = min(int(self.rng.integers(min_width, max_width + 1)), len(ys))
+            x0 = int(self.rng.integers(0, len(xs) - wx + 1))
+            y0 = int(self.rng.integers(0, len(ys) - wy + 1))
+            region = occupied[x0 : x0 + wx, y0 : y0 + wy]
+            available = np.argwhere(~region)
+            remaining = target_columns - int(occupied.sum())
+            selected_count = min(len(available), remaining)
+            if selected_count:
+                selected = self.rng.choice(len(available), size=selected_count, replace=False)
+                region[tuple(available[selected].T)] = True
+        columns = np.argwhere(occupied)
+        return np.asarray(
+            [[xs[i], ys[j], z] for i, j in columns for z in zs],
+            dtype=float,
+        )
 
     def _update_moving_shape(self, shape, dt, bounds):
         """Advance one shape, bounce it at bounds, and translate its point cloud.

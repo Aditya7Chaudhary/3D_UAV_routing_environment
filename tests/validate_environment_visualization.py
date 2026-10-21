@@ -20,6 +20,7 @@ import copy
 import json
 import shutil
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -69,6 +70,7 @@ def build_shape_params(config: dict) -> MapGenParams:
     """Create normal structured-obstacle parameters from the existing YAML."""
     params = config["params"]
     return MapGenParams(
+        occupancy_ratio=float(params.get("occupancy_ratio", 0.5)),
         cylinder_ratio=float(params["cylinder_ratio"]),
         circle_ratio=float(params["circle_ratio"]),
         gate_ratio=float(params["gate_ratio"]),
@@ -266,11 +268,26 @@ def validate_one(
         )
         non_empty = bool(len(cloud) > 0 and np.any(mask))
         point_cells_occupied = bool(all(grid.is_occ(point) == 1 for point in cloud))
+        target_occupancy = round(mask.size * generator.mgpa.occupancy_ratio)
         result["checks"].update(
             finite_coordinates=finite,
             non_empty=non_empty,
             source_points_in_bounds=in_bounds,
             source_points_marked_occupied=point_cells_occupied,
+            occupancy_matches_configured_target=int(mask.sum()) == target_occupancy,
+        )
+        start, goal = generator._planning_endpoints()
+        planning_path = generator._free_path(
+            mask,
+            start,
+            goal,
+            generator._planning_clearance(),
+        )
+        opposite_corner = maximum - 0.01 * resolution
+        result["checks"].update(
+            origin_endpoint_free=grid.is_occ(np.zeros(3)) == 0,
+            opposite_endpoint_free=grid.is_occ(opposite_corner) == 0,
+            clearance_path_connects_opposite_corners=planning_path is not None,
         )
 
         # Rendering consistency: the mesh is built from the same Boolean
@@ -400,6 +417,7 @@ def save_comparison_grid(records: list[dict], output_dir: Path) -> Path | None:
         return None
     import matplotlib.pyplot as plt
 
+    output_dir.mkdir(parents=True, exist_ok=True)
     columns = 3
     rows = int(np.ceil(len(successful) / columns))
     fig, axes = plt.subplots(rows, columns, figsize=(15, 5 * rows))
@@ -414,9 +432,31 @@ def save_comparison_grid(records: list[dict], output_dir: Path) -> Path | None:
     fig.suptitle("UAV environment visualization validation", fontsize=16)
     fig.tight_layout()
     path = output_dir / "comparison_grid.png"
-    fig.savefig(path, dpi=180, bbox_inches="tight")
-    plt.close(fig)
-    return path
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            prefix="comparison_grid-",
+            suffix=".png",
+            dir=output_dir,
+            delete=False,
+        ) as temporary_file:
+            temporary_path = Path(temporary_file.name)
+        fig.savefig(temporary_path, format="png", dpi=180, bbox_inches="tight")
+        try:
+            temporary_path.replace(path)
+            return path
+        except OSError as exc:
+            print(
+                f"Could not replace {path} ({exc}); "
+                f"the comparison grid is available at {temporary_path}."
+            )
+            return temporary_path
+    except OSError:
+        if temporary_path is not None and temporary_path.exists():
+            temporary_path.unlink()
+        raise
+    finally:
+        plt.close(fig)
 
 
 def write_text_report(report: dict, path: Path) -> None:

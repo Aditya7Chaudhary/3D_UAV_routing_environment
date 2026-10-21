@@ -114,6 +114,7 @@ def build_shape_params(config: dict) -> MapGenParams:
     """Convert the YAML primitive-density settings into generator parameters."""
     params_cfg = config["params"]
     return MapGenParams(
+        occupancy_ratio=float(params_cfg.get("occupancy_ratio", 0.5)),
         cylinder_ratio=float(params_cfg["cylinder_ratio"]),
         circle_ratio=float(params_cfg["circle_ratio"]),
         gate_ratio=float(params_cfg["gate_ratio"]),

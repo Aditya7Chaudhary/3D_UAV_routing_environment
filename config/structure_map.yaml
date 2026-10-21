@@ -14,7 +14,9 @@ map:
   simple_2d: false     # Export a 2D occupied-column projection instead of the full 3D cloud.
 
 params:
-  # Ratios are target shares of all map voxels, not guaranteed exact volumes.
+  occupancy_ratio: 0.35  # Shared occupied-voxel target for every environment type.
+  # Relative shares of primitive occupancy for random_land and mixed maps.
+  # Those presets use map-scaled primitives to keep 20% occupancy navigable.
   cylinder_ratio: 0.015
   circle_ratio: 0.005
   gate_ratio: 0.005
@@ -28,18 +30,18 @@ params:
 
 # Select the overall environment family. Valid values are: structured,
 # corridor, random_land, mountains, blocks, and mixed. Friendly aliases are
-# random_terrain, mountain, urban, and city. The default structured mode uses
-# the five primitive ratios above; other modes use only the relevant options.
+# random_terrain, mountain, urban, and city. Every preset is adjusted to the
+# shared occupancy target; family-specific options still define the geometry.
 environment:
-  type: mixed
+  type: random_land
 
-  # corridor: long X-direction passage with alternating openings in partitions.
+  # corridor: full-map maze; openings set passage width and loops add alternate routes.
   width: 6.0
   wall_height: 2.5
   partition_spacing: 6.0
   opening_width: 1.5
 
-  # random_land and mixed: seeded terrain is solid below a smoothed height field.
+  # mixed: seeded terrain is solid below a smoothed height field.
   base_height: 0.0
   height_range: 1.0
   smoothing_passes: 5
@@ -50,7 +52,7 @@ environment:
   spread_min: 1.5
   spread_max: 4.0
 
-  # blocks: rectangular building footprints and heights in world units.
+  # structured and blocks: rectangular building footprints/heights in metres.
   building_count: 20
   min_width: 1.0
   max_width: 3.0

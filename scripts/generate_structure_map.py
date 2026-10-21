@@ -92,6 +92,7 @@ def main():
     grid_mp = GridMapParams(basic_mp=basic, resolution=float(mcfg["resolution"]))
     # Transfer YAML ratios and size-distribution controls into typed settings.
     mgpa = MapGenParams(
+        occupancy_ratio=float(pcfg.get("occupancy_ratio", 0.5)),
         cylinder_ratio=float(pcfg["cylinder_ratio"]),
         circle_ratio=float(pcfg["circle_ratio"]),
         gate_ratio=float(pcfg["gate_ratio"]),
