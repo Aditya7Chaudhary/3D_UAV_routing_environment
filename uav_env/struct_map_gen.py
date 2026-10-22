@@ -588,25 +588,6 @@ class StructMapGenerator:
             result[tuple(candidates[selected].T)] = True
         return result
 
-    def _sync_height_field(self, occupied: np.ndarray):
-        """Keep a height field only when occupancy is still a filled terrain column."""
-        xs, ys, zs = self._valid_grid_axes()
-        if occupied.shape != (len(xs), len(ys), len(zs)) or not len(zs):
-            self.terrain_height_field = None
-            return
-        heights = np.full((len(xs), len(ys)), np.nextafter(zs[0], -np.inf))
-        for i in range(len(xs)):
-            for j in range(len(ys)):
-                column = occupied[i, j]
-                if not column.any():
-                    continue
-                last = int(np.max(np.flatnonzero(column)))
-                if not np.all(column[: last + 1]):
-                    self.terrain_height_field = None
-                    return
-                heights[i, j] = zs[last]
-        self.terrain_height_field = (xs.copy(), ys.copy(), heights)
-
     def _finalize_for_planning(self, target: int, env_type: str):
         """Carve a start-goal route, restore the occupancy target, and sync maps."""
         occupied, protected = self._protect_path(self._occupied_bool())
@@ -614,8 +595,6 @@ class StructMapGenerator:
             occupied = self._refill_full_columns(occupied, target, protected)
         else:
             occupied = self._apply_occupancy_target(occupied, target, protected)
-        if env_type in {"mountains", "mixed"}:
-            self._sync_height_field(occupied)
         points = self._cloud_from_occupied(occupied)
         self.grid_map.clear_all_occ()
         self.grid_map.fill_map(points)
@@ -792,33 +771,50 @@ class StructMapGenerator:
         return self._height_field_cloud(heights)
 
     def _mountain_cloud(self, options: dict, target: int | None = None) -> np.ndarray:
-        """Generate solid Gaussian hills over a flat base terrain.
+        """Generate separate, solid Gaussian mountain obstacles.
 
-        Options control the number, maximum height, and horizontal spread of
-        hills.  Summing smooth Gaussian peaks creates mountain-like slopes
-        without requiring external terrain assets.
+        Each hill has a bounded footprint so the valleys remain free space.
+        Alternating smaller and larger peaks creates useful scale variation.
+        When supplied, ``target`` adjusts only the mountain voxels; it never
+        creates a ground layer across the map.
         """
-        xs, ys, _ = self._valid_grid_axes()
+        xs, ys, zs = self._valid_grid_axes()
         x_grid, y_grid = np.meshgrid(xs, ys, indexing="ij")
         origin = self.mpa.basic_mp.map_origin
         maximum = self.mpa.basic_mp.max_range
-        heights = np.full_like(x_grid, origin[2] + float(options.get("base_height", 0.0)))
+        empty_height = np.nextafter(zs[0], -np.inf) if len(zs) else origin[2]
+        heights = np.full_like(x_grid, empty_height)
         count = max(int(options.get("mountain_count", 5)), 1)
         peak_max = float(options.get("peak_height", 2.0))
         spread_min = float(options.get("spread_min", 1.5))
         spread_max = float(options.get("spread_max", 4.0))
-        for _ in range(count):
+        spread_mid = (spread_min + spread_max) / 2.0
+        base_height = max(float(options.get("base_height", 0.0)), 0.0)
+        for index in range(count):
             cx = self.rng.uniform(origin[0], maximum[0])
             cy = self.rng.uniform(origin[1], maximum[1])
-            peak = self.rng.uniform(0.4 * peak_max, peak_max)
-            spread = self.rng.uniform(spread_min, max(spread_min, spread_max))
-            # The exponent creates radial slopes that decay smoothly from a peak.
-            heights += peak * np.exp(-((x_grid - cx) ** 2 + (y_grid - cy) ** 2) / (2 * spread**2))
+            if index % 2 == 0:
+                spread = self.rng.uniform(spread_mid, max(spread_mid, spread_max))
+                peak = self.rng.uniform(0.75 * peak_max, peak_max)
+            else:
+                spread = self.rng.uniform(spread_min, max(spread_min, spread_mid))
+                peak = self.rng.uniform(0.35 * peak_max, 0.65 * peak_max)
+            profile = peak * np.exp(
+                -((x_grid - cx) ** 2 + (y_grid - cy) ** 2) / (2 * spread**2)
+            )
+            # Cut off the Gaussian tails so valleys do not become a thin,
+            # map-wide floor layer.
+            footprint = profile >= max(0.5 * self.mpa.resolution, 0.025 * peak)
+            mountain_heights = origin[2] + base_height + profile
+            heights[footprint] = np.maximum(heights[footprint], mountain_heights[footprint])
+
         z_max = maximum[2] - 0.5 * self.mpa.resolution
-        heights = np.clip(heights, origin[2], z_max)
+        heights = np.clip(heights, empty_height, z_max)
+        occupied = zs[None, None, :] <= heights[:, :, None]
         if target is not None:
-            return self._fit_height_field_cloud(heights, target)
-        return self._height_field_cloud(heights)
+            occupied = self._apply_occupancy_target(occupied, target)
+        self.terrain_height_field = None
+        return self._cloud_from_occupied(occupied)
 
     def _blocks_cloud(self, options: dict) -> np.ndarray:
         """Generate solid rectangular buildings separated by open streets.
@@ -988,17 +984,15 @@ class StructMapGenerator:
             self.clear()
             self._generate_planning_primitives(target_occupancy, if_dyn)
         elif env_type == "mountains":
-            self._replace_with_cloud(
-                self._mountain_cloud(options, target_occupancy)
-            )
+            self._replace_with_cloud(self._mountain_cloud(options))
         elif env_type == "blocks":
             self._replace_with_cloud(
                 self._fit_occupancy(self._blocks_cloud(options), target_occupancy)
             )
         elif env_type == "mixed":
-            # Split the shared target evenly between terrain and primitives.
+            # Split the target between isolated mountain obstacles and primitives.
             terrain_target = target_occupancy // 2
-            terrain = self._random_land_cloud(options, terrain_target)
+            terrain = self._mountain_cloud(options, terrain_target)
             self._replace_with_cloud(terrain)
             remaining = target_occupancy - len(terrain)
             if remaining:

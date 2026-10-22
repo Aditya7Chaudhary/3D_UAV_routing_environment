@@ -14,7 +14,7 @@ map:
   simple_2d: false     # Export a 2D occupied-column projection instead of the full 3D cloud.
 
 params:
-  occupancy_ratio: 0.35  # Shared occupied-voxel target for every environment type.
+  occupancy_ratio: 0.2  # Shared voxel target; mountain presets fit obstacle volumes only.
   # Relative shares of primitive occupancy for random_land and mixed maps.
   # Those presets use map-scaled primitives to keep 20% occupancy navigable.
   cylinder_ratio: 0.015
@@ -41,16 +41,11 @@ environment:
   partition_spacing: 6.0
   opening_width: 1.5
 
-  # mixed: seeded terrain is solid below a smoothed height field.
-  base_height: 0.0
-  height_range: 1.0
-  smoothing_passes: 5
-
-  # mountains: sum of smooth Gaussian hills; heights are clipped to map height.
+  # mountains/mixed: alternating small and large Gaussian mountain obstacles.
   mountain_count: 5
-  peak_height: 2.0
-  spread_min: 1.5
-  spread_max: 4.0
+  peak_height: 4.5
+  spread_min: 0.5
+  spread_max: 2.0
 
   # structured and blocks: rectangular building footprints/heights in metres.
   building_count: 20

@@ -37,7 +37,7 @@ Original research paper (please cite if you use this for research):
 | `uav_env/shapes.py` | Obstacle primitives: `Cylinder`, `Ellipsoid`, `Polyhedron`, `CircleGate`, `RectGate`, plus rotation helpers. Pure NumPy/SciPy (ConvexHull replaces QuickHull). |
 | `uav_env/grid_map.py` | 3D occupancy grid: indexing, occupancy set/query, inflation fill, 2D projection of occupied columns. |
 | `uav_env/geo_map.py` | Lightweight container that stores the generated geometric obstacle instances. |
-| `uav_env/struct_map_gen.py` | Environment generator: original structured primitive maps plus corridor, random-land, mountain, urban-block, and mixed terrain presets; optional noise and dynamic primitive motion. |
+| `uav_env/struct_map_gen.py` | Environment generator: original structured primitive maps plus corridor, random-land, mountain, urban-block, and mixed obstacle presets; optional noise and dynamic primitive motion. |
 | `uav_env/map_io.py` | I/O helpers: image→3D cloud, PCD read/write, random cloud mode, noise injection, clear-zone filtering, CSV clear-position loading. |
 | `uav_env/mesh_export.py` | Voxelize a PCD, greedy rectangle merge per Z-slice, export OBJ mesh (optional Gazebo model files). |
 | `uav_env/visualize.py` | Visualization via Matplotlib (default) or Open3D (replaces RViz). |
@@ -137,12 +137,12 @@ params:
   poly_ratio: 0.005
 ```
 
-`occupancy_ratio: 0.5` targets 50% of valid map voxels occupied for every
-environment preset. Raise or lower this value to change overall density. The
-obstacle-family ratios only change the primitive mix in `random_land` and
-`mixed`; `mixed` divides its target evenly between terrain and primitives.
-Other preset options continue to determine the layout and shape of their
-obstacles while the generator adjusts the voxel count to the shared target.
+`occupancy_ratio: 0.5` targets 50% of valid map voxels occupied by obstacles.
+Raise or lower this value to change overall density. The obstacle-family ratios
+only change the primitive mix in `random_land` and `mixed`; `mixed` divides its
+target evenly between mountain obstacles and primitives. Occupancy fitting
+for `mountains` and `mixed` adjusts obstacle volumes without adding a map-wide
+ground layer.
 
 ### Environment presets
 
@@ -156,9 +156,9 @@ different family of environments:
 | `structured` | Randomly positioned buildings and pillars spanning the full Z axis. | `params.occupancy_ratio`, `environment.min_width`, `environment.max_width` |
 | `corridor` | Full-map maze with connected rooms, walls, and optional loops. | `wall_thickness`, `opening_width`, `extra_openings` |
 | `random_land` | Fewer, map-scaled cylinders, gates, ellipsoids, and polyhedra. | `params.occupancy_ratio`, `params.*_ratio` |
-| `mountains` | Solid terrain made from random Gaussian hills. | `mountain_count`, `peak_height`, `spread_min`, `spread_max` |
+| `mountains` | Separate Gaussian mountain obstacles in varied small and large sizes. | `mountain_count`, `peak_height`, `spread_min`, `spread_max` |
 | `blocks` | Dense city-like field of rectangular buildings. | `building_count`, `min_width`, `max_width`, `min_height`, `max_height` |
-| `mixed` | Smoothed terrain with fewer, larger primitive obstacles. | terrain options plus `params.*_ratio` |
+| `mixed` | Varied mountain obstacles mixed with fewer, larger primitive obstacles. | mountain options plus `params.*_ratio` |
 
 `random_terrain`/`land`, `mountain`, and `urban`/`city` are also accepted
 aliases for `random_land`, `mountains`, and `blocks`, respectively.
@@ -169,9 +169,9 @@ For example, generate mountains by changing only this block:
 environment:
   type: mountains
   mountain_count: 8
-  peak_height: 2.2
-  spread_min: 1.0
-  spread_max: 3.5
+  peak_height: 4.5
+  spread_min: 0.5
+  spread_max: 2.0
 ```
 
 All preset randomness is controlled by the existing `params.seed`; when more
@@ -195,7 +195,8 @@ It creates `outputs/random_environment_dataset/` with separate `images/` PNG
 previews, `point_clouds/` PCD and NPY coordinate arrays, `metadata.jsonl`, and
 `dataset_summary.json`. Environment types are deliberately sampled with an
 uneven default distribution: structured 35%, blocks 25%, mountains 15%, random
-land 10%, corridor 10%, and mixed 5%.
+land 10%, corridor 10%, and mixed 5%. Mountain and mixed samples vary peak
+height, count, and spread to generate multiple obstacle scales.
 
 Use `-x` as a short form of `--samples`, or tune the distribution with six
 comma-separated weights in this order: structured, blocks, mountains,
@@ -208,11 +209,10 @@ python scripts/generate_environment_dataset.py -x 500 --seed 42 \
 
 ### Validate environment visualisation
 
-The ordinary dataset generator now renders occupied voxels as exterior faces:
-blocks and corridor walls are solid surfaces rather than point layers. Terrain
-and mountain previews use the continuous height field when it matches the
-occupied columns; where the reserved route cuts through terrain, previews fall
-back to the occupancy surface. The collision and exported point-cloud
+The ordinary dataset generator renders occupied voxels as exterior faces:
+blocks and corridor walls are solid surfaces rather than point layers.
+Mountains and mixed scenes are rendered from obstacle occupancy, with mixed
+primitive families coloured separately. The collision and exported point-cloud
 representation remain the voxel map.
 
 Run the repeatable validation suite from the repository root:

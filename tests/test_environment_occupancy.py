@@ -108,48 +108,42 @@ class EnvironmentOccupancyTests(unittest.TestCase):
         self.assertTrue(np.all(~partial_columns | reserved_path.any(axis=2)))
         self.assertEqual(int(occupied.sum()), 32 * 4)
 
-    def test_height_field_presets_match_their_terrain_targets(self) -> None:
+    def test_mountains_and_mixed_apply_occupancy_to_local_obstacles(self) -> None:
         for environment_type in ("mountains", "mixed"):
             with self.subTest(environment_type=environment_type):
-                generator = make_generator((8.0, 8.0, 6.0), 0.5)
-                generator.mgpa = MapGenParams(
-                    occupancy_ratio=0.5,
-                    cylinder_ratio=1.0,
-                    circle_ratio=0.0,
-                    gate_ratio=0.0,
-                    ellip_ratio=0.0,
-                    poly_ratio=0.0,
-                    w1=0.4,
-                    w2=0.6,
-                    w3=0.8,
+                generator = self.make_occupancy_generator()
+                generator.generate_environment(
+                    {
+                        "type": environment_type,
+                        "mountain_count": 6,
+                        "peak_height": 2.0,
+                        "spread_min": 0.5,
+                        "spread_max": 2.5,
+                    },
+                    seed=17,
                 )
-                generator.rng = np.random.default_rng(17)
-                target = int(
-                    round(
-                        np.prod(
-                            [
-                                len(axis)
-                                for axis in generator._valid_grid_axes()
-                            ]
-                        )
-                        * generator.mgpa.occupancy_ratio
+
+                occupied = generator._occupied_bool()
+                column_heights = occupied.sum(axis=2)
+                floor_coverage = occupied[:, :, 0].mean()
+                positive_heights = column_heights[column_heights > 0]
+                obstacle_count = sum(
+                    len(shapes)
+                    for shapes in (
+                        generator.geo_map.cylinder,
+                        generator.geo_map.circle_gate,
+                        generator.geo_map.rect_gate,
+                        generator.geo_map.ellipsoid,
+                        generator.geo_map.polyhedron,
                     )
                 )
-                terrain_target = target if environment_type == "mountains" else target // 2
-                if environment_type == "mountains":
-                    points = generator._mountain_cloud(
-                        {"mountain_count": 5, "peak_height": 2.0}, terrain_target
-                    )
-                else:
-                    points = generator._random_land_cloud(
-                        {"height_range": 1.0}, terrain_target
-                    )
-                self.assertIsNotNone(generator.terrain_height_field)
-                _, _, heights = generator.terrain_height_field
-                _, _, z_centres = generator._valid_grid_axes()
-                terrain = z_centres[None, None, :] <= heights[:, :, None]
-                self.assertEqual(len(points), terrain_target)
-                self.assertEqual(int(terrain.sum()), terrain_target)
+
+                self.assertEqual(int(occupied.sum()), round(occupied.size * 0.2))
+                self.assertLess(floor_coverage, 0.8)
+                self.assertGreater(len(np.unique(positive_heights)), 2)
+                self.assertIsNone(generator.terrain_height_field)
+                if environment_type == "mixed":
+                    self.assertGreater(obstacle_count, 0)
 
     def test_every_environment_has_a_clearance_path_between_opposite_corners(self) -> None:
         for environment_type in (

@@ -131,25 +131,19 @@ def sample_environment_options(environment_type: str, rng: np.random.Generator) 
     """Create varied, JSON-safe options for one selected environment family.
 
     A distinct sample seed controls the actual layout inside the environment
-    generator.  This function additionally varies high-level terrain shape,
-    building density, or corridor dimensions so same-type images do not simply
-    differ by object placement.
+    generator. This function additionally varies mountain shapes, building
+    density, or corridor dimensions so same-type images do not simply differ
+    by object placement.
     """
     options: dict[str, float | int | str] = {"type": environment_type}
-    if environment_type in ("random_land", "mixed"):
-        options.update(
-            base_height=0.0,
-            height_range=float(rng.uniform(0.4, 1.8)),
-            smoothing_passes=int(rng.integers(2, 11)),
-        )
-    elif environment_type == "mountains":
-        spread_min = float(rng.uniform(0.8, 2.0))
+    if environment_type in ("mountains", "mixed"):
+        spread_min = float(rng.uniform(0.5, 1.5))
         options.update(
             base_height=0.0,
             mountain_count=int(rng.integers(3, 10)),
-            peak_height=float(rng.uniform(0.8, 2.8)),
+            peak_height=float(rng.uniform(3.0, 5.2)),
             spread_min=spread_min,
-            spread_max=float(rng.uniform(max(spread_min, 2.0), 6.0)),
+            spread_max=float(rng.uniform(max(spread_min, 1.5), 3.0)),
         )
     elif environment_type == "blocks":
         min_width = float(rng.uniform(0.6, 1.5))
