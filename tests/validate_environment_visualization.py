@@ -267,7 +267,21 @@ def validate_one(
             np.all(cloud >= origin - 1e-9) and np.all(cloud < maximum + 1e-9)
         )
         non_empty = bool(len(cloud) > 0 and np.any(mask))
-        point_cells_occupied = bool(all(grid.is_occ(point) == 1 for point in cloud))
+        point_cells_occupied = True
+        for offset in range(0, len(cloud), 262144):
+            indices = grid.pos_to_index(cloud[offset : offset + 262144])
+            valid = np.all((indices >= 0) & (indices < grid.mp.map_grid_size), axis=1)
+            if not np.all(valid):
+                point_cells_occupied = False
+                break
+            buffer_indices = (
+                indices[:, 0] * grid.mp.map_grid_size_ytz
+                + indices[:, 1] * grid.mp.map_grid_size[2]
+                + indices[:, 2]
+            )
+            if not np.all(grid.occupancy[buffer_indices] > grid.mp.min_thrd):
+                point_cells_occupied = False
+                break
         target_occupancy = round(mask.size * generator.mgpa.occupancy_ratio)
         result["checks"].update(
             finite_coordinates=finite,

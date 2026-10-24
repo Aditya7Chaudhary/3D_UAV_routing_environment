@@ -247,6 +247,20 @@ The terrain report explicitly records the unavoidable sub-voxel difference
 between the continuous height field and its centre-sampled collision voxels.
 All other improved surfaces are exact exposed faces of occupied voxels.
 
+To generate just one combined, lower-cost preview image of all six environment
+types, run:
+
+```bash
+python scripts/preview_environment_types.py
+```
+
+This writes `outputs/environment_types_preview.png`. The preview uses a 1 m
+voxel resolution by default without changing the configured map dimensions or
+editing the YAML; it is for visual comparison, not a production-resolution
+point cloud. Override the preview resolution with `--resolution` if needed.
+On a 120 x 120 x 60 m map, the default 1 m preview took about 84 seconds on
+the machine used to verify this script.
+
 ### 2) Load a maze image as a 3D map
 
 ```bash
